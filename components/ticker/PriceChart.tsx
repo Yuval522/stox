@@ -21,6 +21,7 @@ import {
 } from "lightweight-charts";
 import type { PricePoint } from "@/lib/finance/types";
 import { computeBollingerBands, computeEmaSeries, computeMacd, computeRsiSeries } from "@/lib/finance/chartIndicators";
+import { cn } from "@/lib/utils";
 
 export type ChartMode = "area" | "candlestick";
 
@@ -129,6 +130,28 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
+/**
+ * Resolves a Time for an x pixel coordinate even when lightweight-charts'
+ * own `param.time` comes back undefined — which it reliably does for any
+ * click landing in the reserved empty margin to the right of the last bar
+ * (or left of the first). That's a well-known library gap: `param.time` is
+ * only populated when the crosshair lines up with an actual data point, but
+ * a real user very often draws a trendline/fibonacci TOWARD the most recent
+ * price action, which means the second (or even first) click frequently
+ * lands slightly past the last candle — previously that silently no-opped
+ * the whole draw, which is exactly what read as "trendline/fibonacci fails
+ * to finalize." Falling back to `coordinateToLogical` + rounding + clamping
+ * to the data's actual index range snaps that click to the nearest real
+ * bar (almost always the last one) instead of doing nothing.
+ */
+function resolveTimeAtX(chart: IChartApi | null, dates: string[], x: number): Time | null {
+  if (!chart || dates.length === 0) return null;
+  const logical = chart.timeScale().coordinateToLogical(x);
+  if (logical == null) return null;
+  const idx = Math.max(0, Math.min(dates.length - 1, Math.round(logical)));
+  return dates[idx] ?? null;
+}
+
 function timeToDate(time: Time): Date {
   if (typeof time === "string") return new Date(time);
   if (typeof time === "number") return new Date(time * 1000);
@@ -176,6 +199,33 @@ interface ChartTooltipState {
   time: string;
   price: number;
 }
+
+/**
+ * One SMA/EMA overlay's identity, for the custom right-margin axis tag
+ * system below (see recomputeIndicatorTags). `lastValue` is the series'
+ * own final data point — recomputed fresh every time that series is
+ * rebuilt (data/period/toggle change), NOT re-derived from the chart, since
+ * lightweight-charts doesn't expose a "get the last value" getter.
+ */
+interface IndicatorSeriesInfo {
+  id: string;
+  label: string;
+  color: string;
+  series: ISeriesApi<"Line">;
+  lastValue: number;
+}
+
+/** One rendered right-margin axis tag — plain pixel Y (container-relative), safe to use directly since SMA/EMA always live on the main pane (pane 0), which starts at y=0 of the container. */
+interface IndicatorTag {
+  id: string;
+  label: string;
+  color: string;
+  y: number;
+  value: number;
+}
+
+/** Minimum vertical gap enforced between stacked axis tags so two indicators with close last values don't visually merge into one unreadable blob. */
+const INDICATOR_TAG_MIN_GAP_PX = 20;
 
 /**
  * QA hotfix (Final Polish pass): AAPL's date axis was still rendering
@@ -393,6 +443,14 @@ export function PriceChart({
   // handler is registered once (creation effect depends only on `locale`) —
   // same ref-mirroring pattern as drawToolRef/onDrawCompleteRef below.
   const symbolRef = useRef(symbol);
+  // The currently-visible bars' dates, kept in sync for resolveTimeAtX's
+  // right/left-margin fallback (see its doc comment) — the click handler is
+  // registered once (creation effect depends only on `locale`) and needs
+  // the CURRENT data, not whatever was visible when the chart was created.
+  const dataDatesRef = useRef<string[]>([]);
+  useEffect(() => {
+    dataDatesRef.current = data.map((d) => d.date);
+  }, [data]);
   // Rubber-band preview: a dashed, ghost-colored 2-point line that tracks
   // the cursor between the first and second click of a trendline/
   // fibonacci drawing, so the user can see what they're about to draw
@@ -410,6 +468,43 @@ export function PriceChart({
   // the color-preset picker (ChartPanel.tsx) overrides it.
   const seriesColorRef = useRef<string>(SUCCESS);
   const [tooltip, setTooltip] = useState<ChartTooltipState | null>(null);
+  // Custom right-margin axis tags for SMA/EMA (live report/screenshot:
+  // "EMA labels float over the candles and obscure the chart data"). SMA/EMA
+  // series use `lastValueVisible: false` (see their effects below) so
+  // lightweight-charts' own native last-value badge — which doesn't widen
+  // the axis gutter to fit a `title` string and so overflows into the plot
+  // area — never renders at all; these React-positioned tags replace it,
+  // confined to the widened gutter reserved via `rightPriceScale.minimumWidth`
+  // above. `indicatorSeriesInfoRef` is the source of truth (updated by the
+  // SMA/EMA effects); `indicatorTags` is the derived, collision-avoided,
+  // pixel-positioned result actually rendered.
+  const indicatorSeriesInfoRef = useRef<IndicatorSeriesInfo[]>([]);
+  const [indicatorTags, setIndicatorTags] = useState<IndicatorTag[]>([]);
+
+  /**
+   * Recomputes every active SMA/EMA tag's pixel Y (via `priceToCoordinate`)
+   * and applies simple top-to-bottom collision avoidance so close values
+   * don't overlap. Must be called any time the price scale's mapping could
+   * have changed: after (re)building an indicator series, on crosshair
+   * move (covers drag-panning), on visible-logical-range change (covers
+   * wheel-zoom and fitContent), and on container resize (covers the
+   * fullscreen toggle).
+   */
+  function recomputeIndicatorTags() {
+    const raw = indicatorSeriesInfoRef.current
+      .map((info): IndicatorTag | null => {
+        const y = info.series.priceToCoordinate(info.lastValue);
+        return y == null ? null : { id: info.id, label: info.label, color: info.color, y, value: info.lastValue };
+      })
+      .filter((tag): tag is IndicatorTag => tag !== null)
+      .sort((a, b) => a.y - b.y);
+    for (let i = 1; i < raw.length; i++) {
+      if (raw[i].y - raw[i - 1].y < INDICATOR_TAG_MIN_GAP_PX) {
+        raw[i] = { ...raw[i], y: raw[i - 1].y + INDICATOR_TAG_MIN_GAP_PX };
+      }
+    }
+    setIndicatorTags(raw);
+  }
 
   useEffect(() => {
     drawToolRef.current = drawTool;
@@ -713,7 +808,18 @@ export function PriceChart({
         vertLines: { color: "rgba(148, 163, 184, 0.08)", visible: showGrid },
         horzLines: { color: "rgba(148, 163, 184, 0.08)", visible: showGrid },
       },
-      rightPriceScale: { borderColor: "rgba(148, 163, 184, 0.15)" },
+      rightPriceScale: {
+        borderColor: "rgba(148, 163, 184, 0.15)",
+        // QA fix (live report/screenshot: "EMA labels float over the
+        // candles"): reserves guaranteed room in the axis gutter for the
+        // custom indicator tags below (INDICATOR_TAG_GUTTER_PX-ish) — SMA/
+        // EMA no longer use lightweight-charts' native last-value label at
+        // all (see their `lastValueVisible: false` below), so this margin
+        // exists purely for our own React-rendered tags, keeping them fully
+        // inside the reserved axis margin instead of floating over the plot
+        // area where the real candles/lines are.
+        minimumWidth: 96,
+      },
       timeScale: {
         borderColor: "rgba(148, 163, 184, 0.15)",
         tickMarkFormatter: makeTickMarkFormatter(locale),
@@ -736,6 +842,10 @@ export function PriceChart({
       // TS doesn't carry the outer `if (!container) return;` narrowing into
       // a nested function declaration's body, so re-check here explicitly.
       if (!container) return;
+      // Cheap and idempotent — drag-panning fires crosshair-move
+      // continuously, so this is one of the hooks that keeps the custom
+      // SMA/EMA axis tags glued to their true price level while scrolling.
+      recomputeIndicatorTags();
       const series = mainSeriesRef.current;
       if (!series || !param.point || !param.time) {
         setTooltip(null);
@@ -757,6 +867,16 @@ export function PriceChart({
     }
     chart.subscribeCrosshairMove(handleCrosshairMove);
 
+    // Recompute the custom SMA/EMA axis tags on every visible-range change
+    // (wheel-zoom, programmatic fitContent, keyboard nav) — pan/zoom
+    // gestures that DON'T necessarily fire a crosshair-move event too (e.g.
+    // a trackpad pinch-zoom with the pointer stationary), so this covers
+    // what handleCrosshairMove's own recompute call above would miss.
+    function handleVisibleRangeChange() {
+      recomputeIndicatorTags();
+    }
+    chart.timeScale().subscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
+
     /**
      * Rubber-band drawing preview (live report: "user shouldn't have to
      * double-click blindly"). Once the FIRST click of a trendline/
@@ -774,7 +894,17 @@ export function PriceChart({
       const start = drawStartRef.current;
       const main = mainSeriesRef.current;
       const inProgress = start && (tool === "trendline" || tool === "fibonacci");
-      if (!inProgress || !main || !param.point || param.time == null || param.paneIndex !== 0) {
+      if (!inProgress || !main || !param.point || param.paneIndex !== 0) {
+        removePreviewSeries();
+        return;
+      }
+      // See resolveTimeAtX's doc comment: the cursor is very often past the
+      // last bar (drawing toward "now"), where lightweight-charts leaves
+      // `param.time` undefined — without this fallback the rubber-band
+      // preview would simply vanish right as the user approaches the most
+      // natural place to finish the drawing.
+      const time = param.time ?? resolveTimeAtX(chart, dataDatesRef.current, param.point.x);
+      if (time == null) {
         removePreviewSeries();
         return;
       }
@@ -785,7 +915,7 @@ export function PriceChart({
       }
       const points = [
         { time: start.time, value: start.price },
-        { time: param.time, value: price },
+        { time, value: price },
       ].sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
       if (points[0].time === points[1].time) return; // same bar as the start point — nothing sensible to preview yet
 
@@ -842,11 +972,16 @@ export function PriceChart({
         return;
       }
 
-      if (param.time == null) return; // every other tool needs a time coordinate
+      // See resolveTimeAtX's doc comment: a click landing past the last bar
+      // (very common — drawing toward the most recent price action) leaves
+      // `param.time` undefined by default; falling back to the nearest real
+      // bar via logical-index rounding is what stops that click from being
+      // silently swallowed.
+      const time = param.time ?? resolveTimeAtX(chartRef.current, dataDatesRef.current, param.point.x);
+      if (time == null) return; // every other tool needs a time coordinate
 
       const price = main.coordinateToPrice(param.point.y);
       if (price == null) return;
-      const time = param.time;
 
       if (tool === "horizontal") {
         // Wrapped in try/finally: if createPriceLine ever throws (malformed
@@ -920,6 +1055,11 @@ export function PriceChart({
       if (!entry) return;
       const { width, height } = entry.contentRect;
       chart.resize(Math.max(Math.floor(width), 0), Math.max(Math.floor(height), 200));
+      // Container resize (e.g. the fullscreen toggle) changes the price
+      // scale's pixel mapping just as much as a zoom/pan does — recompute
+      // the custom SMA/EMA tags here too so they don't stay pinned to
+      // stale Y positions from before the resize.
+      recomputeIndicatorTags();
     });
     ro.observe(container);
 
@@ -927,6 +1067,7 @@ export function PriceChart({
       chart.unsubscribeCrosshairMove(handleCrosshairMove);
       chart.unsubscribeCrosshairMove(handlePreviewMove);
       chart.unsubscribeClick(handleClick);
+      chart.timeScale().unsubscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
       ro.disconnect();
       chart.remove();
       chartRef.current = null;
@@ -939,8 +1080,10 @@ export function PriceChart({
       renderedDrawingsRef.current = [];
       drawStartRef.current = null;
       savedDrawingsRef.current = [];
+      indicatorSeriesInfoRef.current = [];
       previewSeriesRef.current = null;
       setTooltip(null);
+      setIndicatorTags([]);
     };
     // showGrid is intentionally read only as this effect's *initial* value —
     // it must stay out of the deps array, since re-running it would tear
@@ -1065,6 +1208,9 @@ export function PriceChart({
       chart.removeSeries(smaSeriesRef.current);
       smaSeriesRef.current = null;
     }
+    // Drop any stale SMA entry before possibly re-adding a fresh one below —
+    // see recomputeIndicatorTags/indicatorSeriesInfoRef's doc comment.
+    indicatorSeriesInfoRef.current = indicatorSeriesInfoRef.current.filter((info) => info.id !== "sma");
 
     if (showSma && indicatorSource.length > smaPeriod) {
       const points = visibleSlice(computeSma(indicatorSource, smaPeriod), visibleStartDate);
@@ -1073,17 +1219,25 @@ export function PriceChart({
           color: SMA_COLOR,
           lineWidth: 2,
           crosshairMarkerVisible: false,
-          // Live report: with several MAs active at once, their price-axis
-          // tags all looked like bare numbers clustered together — no way
-          // to tell which line a given tag belonged to. `title` makes
-          // lightweight-charts render "SMA 20  <value>" next to the last-
-          // value badge, in the same color as the line itself.
-          title: `SMA ${smaPeriod}`,
+          // QA fix (live report/screenshot: "EMA labels float over the
+          // candles"): lightweight-charts' native last-value badge doesn't
+          // widen the axis gutter to fit a `title` string, so with several
+          // MAs active the labeled badges overflowed left into the plot
+          // area, over the candles. Suppressed entirely here — the custom
+          // `indicatorTags` overlay (rendered in the JSX below, confined to
+          // the widened gutter from `rightPriceScale.minimumWidth` above)
+          // replaces it with a properly-contained "SMA 20  <value>" tag.
+          lastValueVisible: false,
         });
         series.setData(points);
         smaSeriesRef.current = series;
+        const lastValue = points[points.length - 1]?.value;
+        if (lastValue != null) {
+          indicatorSeriesInfoRef.current.push({ id: "sma", label: `SMA ${smaPeriod}`, color: SMA_COLOR, series, lastValue });
+        }
       }
     }
+    recomputeIndicatorTags();
   }, [showSma, smaPeriod, indicatorSource, visibleStartDate]);
 
   // EMA overlay toggles (50/100/150/200, any subset) — same pane as the
@@ -1097,22 +1251,28 @@ export function PriceChart({
 
     for (const series of emaSeriesRef.current.values()) chart.removeSeries(series);
     emaSeriesRef.current = new Map();
+    indicatorSeriesInfoRef.current = indicatorSeriesInfoRef.current.filter((info) => !info.id.startsWith("ema-"));
 
     for (const period of emaPeriods) {
       const points = visibleSlice(computeEmaSeries(indicatorSource, period), visibleStartDate);
       if (points.length === 0) continue;
+      const color = EMA_COLORS[period] ?? EMA_COLORS[50];
       const series = chart.addSeries(LineSeries, {
-        color: EMA_COLORS[period] ?? EMA_COLORS[50],
+        color,
         lineWidth: 2,
         crosshairMarkerVisible: false,
-        // Same fix as SMA above — "EMA 50", "EMA 200", etc. next to each
-        // line's own price tag so multiple active EMAs stay distinguishable
-        // instead of clustering into unlabeled numbers.
-        title: `EMA ${period}`,
+        // Same fix as SMA above — replaced by the custom axis-tag overlay
+        // instead of the native badge that overflowed into the candles.
+        lastValueVisible: false,
       });
       series.setData(points);
       emaSeriesRef.current.set(period, series);
+      const lastValue = points[points.length - 1]?.value;
+      if (lastValue != null) {
+        indicatorSeriesInfoRef.current.push({ id: `ema-${period}`, label: `EMA ${period}`, color, series, lastValue });
+      }
     }
+    recomputeIndicatorTags();
     // emaPeriods is an array prop that may get a fresh identity each render
     // — depending on its sorted/joined contents (not the array reference)
     // avoids tearing down and rebuilding every EMA series on every
@@ -1247,12 +1407,18 @@ export function PriceChart({
   return (
     <div
       ref={containerRef}
-      className={
-        fullHeight
-          ? "relative h-full min-h-[320px] w-full min-w-0 overflow-hidden"
-          : "relative h-[320px] w-full min-w-0 overflow-hidden sm:h-[400px]"
-      }
-      style={drawTool === "eraser" ? { cursor: "pointer" } : drawTool ? { cursor: "crosshair" } : undefined}
+      className={cn(
+        "relative w-full min-w-0 overflow-hidden",
+        fullHeight ? "h-full min-h-[320px]" : "h-[320px] sm:h-[400px]",
+        // QA fix (live report: "Eraser cursor doesn't change"): a plain
+        // inline `style.cursor` here used to lose to lightweight-charts'
+        // own inline cursor styling on its internal canvas elements — see
+        // the `.chart-eraser-active`/`.chart-draw-active` !important rules
+        // in globals.css for why a stylesheet class, not inline style, is
+        // what actually wins this fight.
+        drawTool === "eraser" && "chart-eraser-active",
+        drawTool && drawTool !== "eraser" && "chart-draw-active"
+      )}
       // QA fix (diagnostic: "stale hover tooltip persists after cursor
       // moves away"): lightweight-charts fires subscribeCrosshairMove with
       // an empty param (clearing the tooltip) when it detects the pointer
@@ -1282,6 +1448,22 @@ export function PriceChart({
           </span>
         </div>
       )}
+      {/* Custom SMA/EMA right-margin axis tags (see indicatorTags' doc
+          comment) — confined to `right: 3px` inside the widened
+          `rightPriceScale.minimumWidth` gutter, so unlike the native
+          last-value badge these can never overlap the candles/lines in the
+          plot area. `pointer-events-none` so they never intercept clicks
+          meant for the chart underneath (drawing tools, crosshair, pan). */}
+      {indicatorTags.map((tag) => (
+        <div
+          key={tag.id}
+          className="pointer-events-none absolute z-10 max-w-[90px] truncate rounded px-1.5 py-0.5 text-[10px] font-semibold leading-tight text-slate-900 shadow-sm"
+          style={{ right: 3, top: tag.y - 9, backgroundColor: tag.color }}
+          title={`${tag.label}: ${tag.value.toFixed(2)}`}
+        >
+          {tag.label} {tag.value.toFixed(2)}
+        </div>
+      ))}
     </div>
   );
 }

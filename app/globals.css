@@ -445,6 +445,25 @@ input:-webkit-autofill:focus {
   -webkit-backdrop-filter: blur(20px) saturate(160%);
   transition: border-color 200ms ease, box-shadow 200ms ease, transform 200ms ease;
 }
+
+/* QA fix (live report: "Eraser tool cursor doesn't change"): lightweight-charts
+   sets its own inline `cursor` style directly on internal canvas/pane
+   elements (e.g. for pane-resize handles), which — being an inline style —
+   silently wins over a `cursor` set via React's `style` prop on our OUTER
+   container div, even though CSS `cursor` normally inherits down. An
+   `!important` rule targeting the container AND every descendant is the one
+   thing that reliably beats that inline style, since a stylesheet
+   `!important` rule outranks a non-important inline style in the cascade.
+   Applied conditionally from PriceChart.tsx via className, not inline
+   style, specifically because inline style could never win this fight. */
+.chart-eraser-active,
+.chart-eraser-active * {
+  cursor: pointer !important;
+}
+.chart-draw-active,
+.chart-draw-active * {
+  cursor: crosshair !important;
+}
 /* QA fix: this used a neutral foreground/16 border on hover, which read as
    a plain "lighter gray" highlight — inconsistent with .glass-card:hover
    just above (the flat, non-hig cards used everywhere else in the app),
