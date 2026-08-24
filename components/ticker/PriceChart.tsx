@@ -1235,6 +1235,17 @@ export function PriceChart({
           // above the chart (rendered in the JSX below) is now the only
           // place SMA/EMA values are shown, fully outside the price scale.
           lastValueVisible: false,
+          // Root-cause fix (live report round 5): lastValueVisible only
+          // suppresses the axis BADGE — it does nothing to
+          // `priceLineVisible`, which defaults to true and independently
+          // draws its own full-width dashed line across the whole pane at
+          // the series' last value. That stray line was still rendering
+          // (unlabeled, since the badge that would have identified it was
+          // just turned off), reading exactly like "an indicator with no
+          // label" even though the actual text lives in the legend row.
+          // Must be turned off explicitly for the legend to be the ONLY
+          // on-chart trace of this series' value.
+          priceLineVisible: false,
         });
         series.setData(points);
         smaSeriesRef.current = series;
@@ -1271,6 +1282,12 @@ export function PriceChart({
         // Same fix as SMA above — replaced by the legend row instead of a
         // native/price-scale badge.
         lastValueVisible: false,
+        // Root-cause fix (live report round 5): see the matching comment on
+        // the SMA series above — priceLineVisible is a SEPARATE option from
+        // lastValueVisible and defaults to true, so every active EMA was
+        // still drawing its own full-width, unlabeled dashed line across
+        // the pane even with the axis badge suppressed.
+        priceLineVisible: false,
       });
       series.setData(points);
       emaSeriesRef.current.set(period, series);
