@@ -13,6 +13,7 @@ import {
   Palette,
   PenLine,
   SlidersHorizontal,
+  Trash2,
   TrendingUp,
   Waypoints,
 } from "lucide-react";
@@ -592,12 +593,15 @@ export function ChartPanel({ history, currency, symbol, exchange, currentPrice =
           </div>
 
           {/* "Edit" dropdown — draw tools popover (Trendline/Fibonacci/
-              H-Line/Clear). Selecting a tool arms it AND closes the menu
-              (the user's next move is on the canvas, not this popover);
-              "Clear" also closes it after wiping every drawing. The
-              trigger itself goes solid/glowing whenever a tool is
-              currently armed, so it stays visibly "active" even with the
-              popover closed while the user is off drawing on the chart. */}
+              H-Line/Eraser/Clear All). Selecting Trendline, Fibonacci, or
+              H-Line arms it AND closes the menu (the user's next move is on
+              the canvas, not this popover); Eraser arms but deliberately
+              leaves the menu open (see its own comment below); "Clear All"
+              closes the menu after wiping every drawing. The trigger itself
+              goes solid/glowing whenever any tool is currently armed
+              (including the eraser), so it stays visibly "active" even with
+              the popover closed while the user is off drawing/erasing on
+              the chart. */}
           <div ref={editMenuRef} className="relative shrink-0">
             <button
               type="button"
@@ -652,6 +656,22 @@ export function ChartPanel({ history, currency, symbol, exchange, currentPrice =
                   }}
                   title="Click once to place a horizontal price line"
                 />
+                {/* Eraser (live report: "instead of a blunt Clear All ...
+                    add an Eraser tool") — click-to-delete for exactly one
+                    drawing, leaving every other trendline/fibonacci/h-line
+                    intact. Unlike the other tools this one does NOT close
+                    the menu on click, and stays armed after each delete
+                    (see PriceChart.tsx's eraser branch) so several drawings
+                    can be erased in a row; it's disarmed the same way as
+                    any other tool — clicking it again, Escape, or arming a
+                    different tool. */}
+                <PillToggle
+                  label="Eraser"
+                  icon={<Eraser className="h-3.5 w-3.5" />}
+                  active={drawTool === "eraser"}
+                  onClick={() => setDrawTool((t) => (t === "eraser" ? null : "eraser"))}
+                  title="Click any single drawing to delete just that one"
+                />
                 <button
                   type="button"
                   onClick={() => {
@@ -661,8 +681,8 @@ export function ChartPanel({ history, currency, symbol, exchange, currentPrice =
                   title="Clear all drawings"
                   className="flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-white/[0.04] px-3 text-xs font-medium text-muted-foreground transition-all duration-200 hover:bg-destructive/15 hover:text-destructive"
                 >
-                  <Eraser className="h-3.5 w-3.5" />
-                  Clear
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Clear All
                 </button>
               </div>
             )}
