@@ -152,6 +152,41 @@ function resolveTimeAtX(chart: IChartApi | null, dates: string[], x: number): Ti
   return dates[idx] ?? null;
 }
 
+/**
+ * Root-cause fix (live report round 4: "trendline/fibonacci completely
+ * broken"). `resolveTimeAtX` rounds a pixel x to the nearest whole BAR — on
+ * any remotely zoomed-out range (e.g. 1Y over a ~1900px chart is under 8px
+ * per bar) two clicks that don't drift more than a few pixels resolve to
+ * the exact SAME bar. lightweight-charts requires strictly distinct times
+ * on a 2-point line series, so `drawTrendlineShape`/`drawFibonacciShape`
+ * silently returned null/no-opped in that case — the tool still disarmed
+ * (so it visibly "consumed" the click) but rendered nothing and threw no
+ * error, which reads exactly like "the tool doesn't work" even though every
+ * underlying coordinate lookup was correct. Used only for the SECOND click
+ * of a two-point drawing, and only when it lands on the same bar as the
+ * first: snaps to the nearest bar that is NOT `excludeTime`, biased toward
+ * whichever side of that bar the raw (unrounded) logical position actually
+ * falls on, so the result is still the closest distinct bar to where the
+ * user really clicked rather than an arbitrary "always +1".
+ */
+function resolveDistinctTimeAtX(
+  chart: IChartApi | null,
+  dates: string[],
+  x: number,
+  excludeTime: Time
+): Time | null {
+  if (!chart || dates.length < 2) return null;
+  const logical = chart.timeScale().coordinateToLogical(x);
+  if (logical == null) return null;
+  let idx = Math.max(0, Math.min(dates.length - 1, Math.round(logical)));
+  if (dates[idx] !== String(excludeTime)) return dates[idx] ?? null;
+  const step = logical - idx >= 0 ? 1 : -1;
+  let nudged = idx + step;
+  if (nudged < 0 || nudged > dates.length - 1) nudged = idx - step; // ran off the data on that side — try the other
+  idx = Math.max(0, Math.min(dates.length - 1, nudged));
+  return dates[idx] ?? null;
+}
+
 function timeToDate(time: Time): Date {
   if (typeof time === "string") return new Date(time);
   if (typeof time === "number") return new Date(time * 1000);
@@ -968,9 +1003,19 @@ export function PriceChart({
       const chartInstance = chartRef.current;
       if (!chartInstance) return;
 
+      // See resolveDistinctTimeAtX's doc comment: a second click landing on
+      // the SAME bar as the first (very easy on a zoomed-out range) used to
+      // silently produce nothing at all. Force the two anchors apart before
+      // handing off to the shape builders, which both legitimately require
+      // (and rely on lightweight-charts requiring) distinct times.
+      let finalTime = time;
+      if (String(finalTime) === String(start.time)) {
+        finalTime = resolveDistinctTimeAtX(chartInstance, dataDatesRef.current, param.point.x, start.time) ?? finalTime;
+      }
+
       try {
         if (tool === "trendline") {
-          const line = drawTrendlineShape(chartInstance, start.time, start.price, time, price);
+          const line = drawTrendlineShape(chartInstance, start.time, start.price, finalTime, price);
           if (line) {
             const id = makeDrawingId();
             registerRenderedDrawing(id, [line], []);
@@ -979,12 +1024,12 @@ export function PriceChart({
               type: "trendline",
               points: [
                 { time: String(start.time), price: start.price },
-                { time: String(time), price },
+                { time: String(finalTime), price },
               ],
             });
           }
         } else if (tool === "fibonacci") {
-          const { series, priceLines } = drawFibonacciShape(main, chartInstance, start.time, start.price, time, price);
+          const { series, priceLines } = drawFibonacciShape(main, chartInstance, start.time, start.price, finalTime, price);
           const id = makeDrawingId();
           registerRenderedDrawing(id, series, priceLines);
           persistNewDrawing({
@@ -992,7 +1037,7 @@ export function PriceChart({
             type: "fibonacci",
             points: [
               { time: String(start.time), price: start.price },
-              { time: String(time), price },
+              { time: String(finalTime), price },
             ],
           });
         }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import {
   AreaChart,
   CandlestickChart,
@@ -300,39 +301,36 @@ export function ChartPanel({ history, currency, symbol, exchange, currentPrice =
 
   const activeIndicatorCount = (showSma ? 1 : 0) + emaPeriods.length + (showBollinger ? 1 : 0) + (showRsi ? 1 : 0) + (showMacd ? 1 : 0);
 
-  return (
+  // Root-cause fix (live report round 4, screenshot evidence: fullscreen
+  // produced "a tiny broken box in the corner" instead of true full
+  // screen). Every prior round kept this as a single element that just
+  // swapped Tailwind classes between an inline `relative` card and a
+  // `fixed inset-0` overlay — CSS-correct in isolation, but `position:
+  // fixed` is only positioned against the real viewport when NO ancestor
+  // establishes its own containing block. Any ancestor with a `transform`,
+  // `filter`/`backdrop-filter`, `perspective`, `contain`, or `will-change`
+  // value silently turns `fixed` into "positioned relative to THAT
+  // ancestor" instead — e.g. `.hig-card`'s own `backdrop-filter: blur(...)`
+  // (globals.css), used elsewhere in this app's card system, is exactly
+  // the kind of property that does this. Rather than keep auditing every
+  // ancestor a designer might add `backdrop-filter`/`transform` to in the
+  // future (a fragile, patch-forever position), the fullscreen surface is
+  // now rendered through a React portal straight onto `document.body` —
+  // the one guaranteed ancestor-free host, so `fixed inset-0` can never
+  // again be captured by some unrelated card's blur/hover-scale effect.
+  // This is the same architecture Radix/Headless UI-style modals use for
+  // exactly this reason. Trade-off, stated plainly: portaling moves this
+  // subtree to a different DOM parent, so React fully unmounts/remounts it
+  // (and therefore the whole lightweight-charts instance) on each
+  // fullscreen toggle — zoom/pan position resets, but drawn trendlines/
+  // fibonacci/h-lines do not, since those are already reloaded from
+  // ticker-scoped localStorage on every chart (re)creation regardless (see
+  // PriceChart.tsx's persistence layer). `cardContent` is the exact same
+  // JSX either way — only the wrapper around it differs — so nothing about
+  // the toolbar/chart logic below needed to change for this fix.
+  const cardContent = (
     <>
-      {/*
-        Fullscreen (live report round 3: "container fails to resize to the
-        full viewport"). Previously this toggled between `relative` and a
-        `fixed inset-3/6/10` card — a translucent, rounded, backdrop-blurred
-        "window" with margins on every side, PLUS a separate dimmed backdrop
-        layer behind it. That read as a floating panel, not a true
-        fullscreen surface. A later round switched to a plain `fixed
-        inset-0` + `bg-background` + `overflow-y-auto`, which was closer but
-        still relied on `inset-0` alone (no explicit viewport-unit sizing)
-        and allowed the page to scroll instead of the chart filling exactly
-        one screen. Per the live report's literal spec: strict `w-screen
-        h-screen` sizing, an opaque `#121212` surface (not the theme's
-        `bg-background` token, in case that token is ever translucent), and
-        `overflow-hidden` — the chart canvas itself now flexes to consume
-        whatever vertical space is left after the header/toolbar via
-        PriceChart's own `fullHeight` flex-1 handling (see PriceChart.tsx),
-        instead of the page scrolling to reveal it. `hig-card`'s rounded/
-        blurred/translucent treatment is intentionally dropped in fullscreen
-        (kept for the normal inline card) since none of that reads as
-        "immersive full-viewport" once there's nothing visible behind it to
-        blur.
-      */}
-      <div
-        className={cn(
-          "p-4 transition-all duration-300 ease-out",
-          fullscreen
-            ? "fixed inset-0 z-[9999] flex h-screen w-screen flex-col overflow-hidden bg-[#121212]"
-            : "hig-card relative sm:p-5"
-        )}
-      >
-        {/* Top-left ticker + live price header, matching institutional
+      {/* Top-left ticker + live price header, matching institutional
             terminal charts (e.g. "T 400.04"). Also carries the selected
             timeframe's performance readout and the fullscreen toggle on the
             right — this row is unrelated to the toolbar's own controls, so
@@ -726,7 +724,27 @@ export function ChartPanel({ history, currency, symbol, exchange, currentPrice =
             fullHeight={fullscreen}
           />
         </div>
-      </div>
     </>
   );
+
+  // Live report round 4's literal spec: strict `w-screen h-screen` sizing
+  // (not just `inset-0` alone), an opaque `#0d0d0d` surface, `z-[99999]`
+  // (raised from the previous round's `z-[9999]` — comfortably above every
+  // other z-indexed layer anywhere in this app, including this component's
+  // own `z-[999]` toolbar popovers and `z-20` toolbar bar), `p-6`, and
+  // `overflow-hidden` so the chart fills the screen via its own flex-1
+  // handling instead of the page scrolling. `document.body` is only ever a
+  // valid portal target client-side — `fullscreen` can only become `true`
+  // from a click handler after mount, so `document` is guaranteed to exist
+  // by the time this branch runs; no SSR guard needed.
+  if (fullscreen) {
+    return createPortal(
+      <div className="fixed inset-0 z-[99999] flex h-screen w-screen flex-col overflow-hidden bg-[#0d0d0d] p-6">
+        {cardContent}
+      </div>,
+      document.body
+    );
+  }
+
+  return <div className="hig-card relative p-4 sm:p-5">{cardContent}</div>;
 }
