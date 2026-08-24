@@ -303,25 +303,32 @@ export function ChartPanel({ history, currency, symbol, exchange, currentPrice =
   return (
     <>
       {/*
-        Fullscreen (live report: "maximize button is failing to scale the
-        chart to true full screen"). Previously this toggled between
-        `relative` and a `fixed inset-3/6/10` card — a translucent,
-        rounded, backdrop-blurred "window" with margins on every side, PLUS
-        a separate dimmed backdrop layer behind it. That read as a floating
-        panel, not a true fullscreen surface. Now it's a single opaque,
-        edge-to-edge `fixed inset-0` layer at z-[9999] (above every other
-        z-indexed layer in this component, including the z-[999] toolbar
-        popovers) — no separate backdrop needed since this IS the backdrop.
-        `hig-card`'s rounded/blurred/translucent treatment is intentionally
-        dropped in fullscreen (kept for the normal inline card) since none
-        of that reads as "immersive full-viewport" once there's nothing
-        visible behind it to blur.
+        Fullscreen (live report round 3: "container fails to resize to the
+        full viewport"). Previously this toggled between `relative` and a
+        `fixed inset-3/6/10` card — a translucent, rounded, backdrop-blurred
+        "window" with margins on every side, PLUS a separate dimmed backdrop
+        layer behind it. That read as a floating panel, not a true
+        fullscreen surface. A later round switched to a plain `fixed
+        inset-0` + `bg-background` + `overflow-y-auto`, which was closer but
+        still relied on `inset-0` alone (no explicit viewport-unit sizing)
+        and allowed the page to scroll instead of the chart filling exactly
+        one screen. Per the live report's literal spec: strict `w-screen
+        h-screen` sizing, an opaque `#121212` surface (not the theme's
+        `bg-background` token, in case that token is ever translucent), and
+        `overflow-hidden` — the chart canvas itself now flexes to consume
+        whatever vertical space is left after the header/toolbar via
+        PriceChart's own `fullHeight` flex-1 handling (see PriceChart.tsx),
+        instead of the page scrolling to reveal it. `hig-card`'s rounded/
+        blurred/translucent treatment is intentionally dropped in fullscreen
+        (kept for the normal inline card) since none of that reads as
+        "immersive full-viewport" once there's nothing visible behind it to
+        blur.
       */}
       <div
         className={cn(
           "p-4 transition-all duration-300 ease-out",
           fullscreen
-            ? "fixed inset-0 z-[9999] flex flex-col overflow-y-auto bg-background"
+            ? "fixed inset-0 z-[9999] flex h-screen w-screen flex-col overflow-hidden bg-[#121212]"
             : "hig-card relative sm:p-5"
         )}
       >

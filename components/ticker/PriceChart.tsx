@@ -201,31 +201,29 @@ interface ChartTooltipState {
 }
 
 /**
- * One SMA/EMA overlay's identity, for the custom right-margin axis tag
- * system below (see recomputeIndicatorTags). `lastValue` is the series'
- * own final data point — recomputed fresh every time that series is
- * rebuilt (data/period/toggle change), NOT re-derived from the chart, since
- * lightweight-charts doesn't expose a "get the last value" getter.
+ * One SMA/EMA overlay's legend entry (live report round 2: the right-margin
+ * axis-tag approach from the previous fix still visually crowded the real
+ * price-scale numbers — moved out of the price scale entirely into a
+ * dedicated legend row above the chart canvas instead; see the `<div>`
+ * rendered just above `containerRef`'s element in the return below).
+ * `value` is the series' own final data point, refreshed every time that
+ * series is rebuilt (data/period/toggle change) — lightweight-charts
+ * doesn't expose a "get the last value" getter, so this is tracked
+ * ourselves rather than re-derived from the chart.
  */
-interface IndicatorSeriesInfo {
+interface IndicatorLegendItem {
   id: string;
   label: string;
   color: string;
-  series: ISeriesApi<"Line">;
-  lastValue: number;
-}
-
-/** One rendered right-margin axis tag — plain pixel Y (container-relative), safe to use directly since SMA/EMA always live on the main pane (pane 0), which starts at y=0 of the container. */
-interface IndicatorTag {
-  id: string;
-  label: string;
-  color: string;
-  y: number;
   value: number;
 }
 
-/** Minimum vertical gap enforced between stacked axis tags so two indicators with close last values don't visually merge into one unreadable blob. */
-const INDICATOR_TAG_MIN_GAP_PX = 20;
+/** Sort key for the legend row: SMA first, then EMAs in ascending period order (a plain string sort of ids like "ema-100"/"ema-50" would wrongly put "100" before "50"). */
+function legendSortKey(id: string): number {
+  if (id === "sma") return -1;
+  const match = /^ema-(\d+)$/.exec(id);
+  return match ? Number(match[1]) : 999;
+}
 
 /**
  * QA hotfix (Final Polish pass): AAPL's date axis was still rendering
@@ -468,42 +466,21 @@ export function PriceChart({
   // the color-preset picker (ChartPanel.tsx) overrides it.
   const seriesColorRef = useRef<string>(SUCCESS);
   const [tooltip, setTooltip] = useState<ChartTooltipState | null>(null);
-  // Custom right-margin axis tags for SMA/EMA (live report/screenshot:
-  // "EMA labels float over the candles and obscure the chart data"). SMA/EMA
-  // series use `lastValueVisible: false` (see their effects below) so
-  // lightweight-charts' own native last-value badge — which doesn't widen
-  // the axis gutter to fit a `title` string and so overflows into the plot
-  // area — never renders at all; these React-positioned tags replace it,
-  // confined to the widened gutter reserved via `rightPriceScale.minimumWidth`
-  // above. `indicatorSeriesInfoRef` is the source of truth (updated by the
-  // SMA/EMA effects); `indicatorTags` is the derived, collision-avoided,
-  // pixel-positioned result actually rendered.
-  const indicatorSeriesInfoRef = useRef<IndicatorSeriesInfo[]>([]);
-  const [indicatorTags, setIndicatorTags] = useState<IndicatorTag[]>([]);
+  // SMA/EMA legend row (live report round 2: a right-margin axis-tag
+  // overlay — the previous fix for "EMA labels float over the candles" —
+  // still visually crowded the real price-scale numbers up close, so
+  // labels are moved out of the price scale entirely into a dedicated
+  // legend row rendered above the chart canvas; see the return below).
+  // `indicatorLegendInfoRef` is the source of truth (updated by the SMA/EMA
+  // effects, each owning only its own id-prefixed entries so they don't
+  // clobber each other); `indicatorLegend` is the sorted array actually
+  // rendered.
+  const indicatorLegendInfoRef = useRef<IndicatorLegendItem[]>([]);
+  const [indicatorLegend, setIndicatorLegend] = useState<IndicatorLegendItem[]>([]);
 
-  /**
-   * Recomputes every active SMA/EMA tag's pixel Y (via `priceToCoordinate`)
-   * and applies simple top-to-bottom collision avoidance so close values
-   * don't overlap. Must be called any time the price scale's mapping could
-   * have changed: after (re)building an indicator series, on crosshair
-   * move (covers drag-panning), on visible-logical-range change (covers
-   * wheel-zoom and fitContent), and on container resize (covers the
-   * fullscreen toggle).
-   */
-  function recomputeIndicatorTags() {
-    const raw = indicatorSeriesInfoRef.current
-      .map((info): IndicatorTag | null => {
-        const y = info.series.priceToCoordinate(info.lastValue);
-        return y == null ? null : { id: info.id, label: info.label, color: info.color, y, value: info.lastValue };
-      })
-      .filter((tag): tag is IndicatorTag => tag !== null)
-      .sort((a, b) => a.y - b.y);
-    for (let i = 1; i < raw.length; i++) {
-      if (raw[i].y - raw[i - 1].y < INDICATOR_TAG_MIN_GAP_PX) {
-        raw[i] = { ...raw[i], y: raw[i - 1].y + INDICATOR_TAG_MIN_GAP_PX };
-      }
-    }
-    setIndicatorTags(raw);
+  /** Re-derives the sorted, rendered legend array from indicatorLegendInfoRef — call after any SMA/EMA effect mutates that ref. */
+  function refreshIndicatorLegend() {
+    setIndicatorLegend([...indicatorLegendInfoRef.current].sort((a, b) => legendSortKey(a.id) - legendSortKey(b.id)));
   }
 
   useEffect(() => {
@@ -808,18 +785,7 @@ export function PriceChart({
         vertLines: { color: "rgba(148, 163, 184, 0.08)", visible: showGrid },
         horzLines: { color: "rgba(148, 163, 184, 0.08)", visible: showGrid },
       },
-      rightPriceScale: {
-        borderColor: "rgba(148, 163, 184, 0.15)",
-        // QA fix (live report/screenshot: "EMA labels float over the
-        // candles"): reserves guaranteed room in the axis gutter for the
-        // custom indicator tags below (INDICATOR_TAG_GUTTER_PX-ish) — SMA/
-        // EMA no longer use lightweight-charts' native last-value label at
-        // all (see their `lastValueVisible: false` below), so this margin
-        // exists purely for our own React-rendered tags, keeping them fully
-        // inside the reserved axis margin instead of floating over the plot
-        // area where the real candles/lines are.
-        minimumWidth: 96,
-      },
+      rightPriceScale: { borderColor: "rgba(148, 163, 184, 0.15)" },
       timeScale: {
         borderColor: "rgba(148, 163, 184, 0.15)",
         tickMarkFormatter: makeTickMarkFormatter(locale),
@@ -842,10 +808,6 @@ export function PriceChart({
       // TS doesn't carry the outer `if (!container) return;` narrowing into
       // a nested function declaration's body, so re-check here explicitly.
       if (!container) return;
-      // Cheap and idempotent — drag-panning fires crosshair-move
-      // continuously, so this is one of the hooks that keeps the custom
-      // SMA/EMA axis tags glued to their true price level while scrolling.
-      recomputeIndicatorTags();
       const series = mainSeriesRef.current;
       if (!series || !param.point || !param.time) {
         setTooltip(null);
@@ -866,16 +828,6 @@ export function PriceChart({
       });
     }
     chart.subscribeCrosshairMove(handleCrosshairMove);
-
-    // Recompute the custom SMA/EMA axis tags on every visible-range change
-    // (wheel-zoom, programmatic fitContent, keyboard nav) — pan/zoom
-    // gestures that DON'T necessarily fire a crosshair-move event too (e.g.
-    // a trackpad pinch-zoom with the pointer stationary), so this covers
-    // what handleCrosshairMove's own recompute call above would miss.
-    function handleVisibleRangeChange() {
-      recomputeIndicatorTags();
-    }
-    chart.timeScale().subscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
 
     /**
      * Rubber-band drawing preview (live report: "user shouldn't have to
@@ -1055,11 +1007,6 @@ export function PriceChart({
       if (!entry) return;
       const { width, height } = entry.contentRect;
       chart.resize(Math.max(Math.floor(width), 0), Math.max(Math.floor(height), 200));
-      // Container resize (e.g. the fullscreen toggle) changes the price
-      // scale's pixel mapping just as much as a zoom/pan does — recompute
-      // the custom SMA/EMA tags here too so they don't stay pinned to
-      // stale Y positions from before the resize.
-      recomputeIndicatorTags();
     });
     ro.observe(container);
 
@@ -1067,7 +1014,6 @@ export function PriceChart({
       chart.unsubscribeCrosshairMove(handleCrosshairMove);
       chart.unsubscribeCrosshairMove(handlePreviewMove);
       chart.unsubscribeClick(handleClick);
-      chart.timeScale().unsubscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
       ro.disconnect();
       chart.remove();
       chartRef.current = null;
@@ -1080,10 +1026,10 @@ export function PriceChart({
       renderedDrawingsRef.current = [];
       drawStartRef.current = null;
       savedDrawingsRef.current = [];
-      indicatorSeriesInfoRef.current = [];
+      indicatorLegendInfoRef.current = [];
       previewSeriesRef.current = null;
       setTooltip(null);
-      setIndicatorTags([]);
+      setIndicatorLegend([]);
     };
     // showGrid is intentionally read only as this effect's *initial* value —
     // it must stay out of the deps array, since re-running it would tear
@@ -1125,6 +1071,25 @@ export function PriceChart({
       },
     });
   }, [showGrid]);
+
+  // Fix (live report: "fullscreen button fails to resize the chart to the
+  // full viewport"): the ResizeObserver above already resizes the chart on
+  // every container size change, and normally that's sufficient — but the
+  // fullscreen toggle also runs a CSS transition (see ChartPanel.tsx's
+  // `transition-all duration-300`), and relying solely on the observer's
+  // own callback timing can leave the chart visibly a frame or two behind
+  // the container while that transition is mid-flight. This effect forces
+  // an immediate, synchronous `chart.resize()` off the container's ACTUAL
+  // current bounding box the instant `fullHeight` flips, so the canvas
+  // never lags behind the "true full screen" size the container is about
+  // to animate to/from.
+  useEffect(() => {
+    const chart = chartRef.current;
+    const container = containerRef.current;
+    if (!chart || !container) return;
+    const rect = container.getBoundingClientRect();
+    chart.resize(Math.max(Math.floor(rect.width), 0), Math.max(Math.floor(rect.height), 200));
+  }, [fullHeight]);
 
   // Swap the main series whenever mode/data/direction/color changes.
   useEffect(() => {
@@ -1208,9 +1173,8 @@ export function PriceChart({
       chart.removeSeries(smaSeriesRef.current);
       smaSeriesRef.current = null;
     }
-    // Drop any stale SMA entry before possibly re-adding a fresh one below —
-    // see recomputeIndicatorTags/indicatorSeriesInfoRef's doc comment.
-    indicatorSeriesInfoRef.current = indicatorSeriesInfoRef.current.filter((info) => info.id !== "sma");
+    // Drop any stale SMA entry before possibly re-adding a fresh one below.
+    indicatorLegendInfoRef.current = indicatorLegendInfoRef.current.filter((info) => info.id !== "sma");
 
     if (showSma && indicatorSource.length > smaPeriod) {
       const points = visibleSlice(computeSma(indicatorSource, smaPeriod), visibleStartDate);
@@ -1219,25 +1183,23 @@ export function PriceChart({
           color: SMA_COLOR,
           lineWidth: 2,
           crosshairMarkerVisible: false,
-          // QA fix (live report/screenshot: "EMA labels float over the
-          // candles"): lightweight-charts' native last-value badge doesn't
-          // widen the axis gutter to fit a `title` string, so with several
-          // MAs active the labeled badges overflowed left into the plot
-          // area, over the candles. Suppressed entirely here — the custom
-          // `indicatorTags` overlay (rendered in the JSX below, confined to
-          // the widened gutter from `rightPriceScale.minimumWidth` above)
-          // replaces it with a properly-contained "SMA 20  <value>" tag.
+          // Live report round 2: a right-margin axis-tag overlay (the
+          // previous fix for "EMA labels float over the candles") still
+          // visually crowded the real price-scale numbers up close.
+          // Suppressed the native/previous badge entirely — the legend row
+          // above the chart (rendered in the JSX below) is now the only
+          // place SMA/EMA values are shown, fully outside the price scale.
           lastValueVisible: false,
         });
         series.setData(points);
         smaSeriesRef.current = series;
         const lastValue = points[points.length - 1]?.value;
         if (lastValue != null) {
-          indicatorSeriesInfoRef.current.push({ id: "sma", label: `SMA ${smaPeriod}`, color: SMA_COLOR, series, lastValue });
+          indicatorLegendInfoRef.current.push({ id: "sma", label: `SMA ${smaPeriod}`, color: SMA_COLOR, value: lastValue });
         }
       }
     }
-    recomputeIndicatorTags();
+    refreshIndicatorLegend();
   }, [showSma, smaPeriod, indicatorSource, visibleStartDate]);
 
   // EMA overlay toggles (50/100/150/200, any subset) — same pane as the
@@ -1251,7 +1213,7 @@ export function PriceChart({
 
     for (const series of emaSeriesRef.current.values()) chart.removeSeries(series);
     emaSeriesRef.current = new Map();
-    indicatorSeriesInfoRef.current = indicatorSeriesInfoRef.current.filter((info) => !info.id.startsWith("ema-"));
+    indicatorLegendInfoRef.current = indicatorLegendInfoRef.current.filter((info) => !info.id.startsWith("ema-"));
 
     for (const period of emaPeriods) {
       const points = visibleSlice(computeEmaSeries(indicatorSource, period), visibleStartDate);
@@ -1261,18 +1223,18 @@ export function PriceChart({
         color,
         lineWidth: 2,
         crosshairMarkerVisible: false,
-        // Same fix as SMA above — replaced by the custom axis-tag overlay
-        // instead of the native badge that overflowed into the candles.
+        // Same fix as SMA above — replaced by the legend row instead of a
+        // native/price-scale badge.
         lastValueVisible: false,
       });
       series.setData(points);
       emaSeriesRef.current.set(period, series);
       const lastValue = points[points.length - 1]?.value;
       if (lastValue != null) {
-        indicatorSeriesInfoRef.current.push({ id: `ema-${period}`, label: `EMA ${period}`, color, series, lastValue });
+        indicatorLegendInfoRef.current.push({ id: `ema-${period}`, label: `EMA ${period}`, color, value: lastValue });
       }
     }
-    recomputeIndicatorTags();
+    refreshIndicatorLegend();
     // emaPeriods is an array prop that may get a fresh identity each render
     // — depending on its sorted/joined contents (not the array reference)
     // avoids tearing down and rebuilding every EMA series on every
@@ -1406,64 +1368,81 @@ export function PriceChart({
 
   return (
     <div
-      ref={containerRef}
       className={cn(
-        "relative w-full min-w-0 overflow-hidden",
-        fullHeight ? "h-full min-h-[320px]" : "h-[320px] sm:h-[400px]",
-        // QA fix (live report: "Eraser cursor doesn't change"): a plain
-        // inline `style.cursor` here used to lose to lightweight-charts'
-        // own inline cursor styling on its internal canvas elements — see
-        // the `.chart-eraser-active`/`.chart-draw-active` !important rules
-        // in globals.css for why a stylesheet class, not inline style, is
-        // what actually wins this fight.
-        drawTool === "eraser" && "chart-eraser-active",
-        drawTool && drawTool !== "eraser" && "chart-draw-active"
+        "flex w-full min-w-0 flex-col gap-2",
+        // The chart container below now handles its own height (fixed in
+        // normal mode, flex-1 in fullscreen) — this outer wrapper just
+        // needs to participate in the fullscreen flex column so the legend
+        // row sits above the chart without stealing its height.
+        fullHeight && "h-full min-h-0"
       )}
-      // QA fix (diagnostic: "stale hover tooltip persists after cursor
-      // moves away"): lightweight-charts fires subscribeCrosshairMove with
-      // an empty param (clearing the tooltip) when it detects the pointer
-      // leaving its own canvas via mousemove tracking — but a fast pointer
-      // exit, or the pointer leaving via a click on an element elsewhere on
-      // the page (e.g. a different DataExplorerTabs tab) rather than a
-      // continuous mousemove trail out through the container's edge, can
-      // land outside the chart without that internal handler ever firing.
-      // A plain onMouseLeave on the container is a guaranteed, library-
-      // independent safety net: the browser always fires it when the
-      // pointer's bounding-box exit happens, regardless of how it got
-      // there, so the tooltip can never outlive the cursor being over it.
-      onMouseLeave={() => setTooltip(null)}
     >
-      {tooltip && (
-        <div
-          className="pointer-events-none absolute z-10 flex flex-col gap-1 rounded-md border border-white/10 bg-slate-900/95 px-3 py-2 shadow-lg backdrop-blur-sm"
-          style={{ left: tooltip.x, top: tooltip.y, width: TOOLTIP_WIDTH }}
-        >
-          <span className="text-[10px] text-muted-foreground">{tooltip.time}</span>
-          <span className="flex items-center gap-1.5 font-mono text-xs font-semibold text-foreground">
+      {/* Live report (round 3): SMA/EMA badges positioned inside the
+          right-margin price-scale gutter (previous fix) still visually
+          crowded the real axis tick numbers up close. Moved indicator
+          values out of the price scale entirely into this plain legend
+          row above the chart — no coordinate math, so it can never
+          overlap chart content or axis labels again. */}
+      {indicatorLegend.length > 0 && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-1">
+          {indicatorLegend.map((item) => (
             <span
-              className="h-2 w-2 shrink-0 rounded-full"
-              style={{ backgroundColor: seriesColorRef.current }}
-            />
-            {tooltip.price.toFixed(2)}
-          </span>
+              key={item.id}
+              className="flex items-center gap-1.5 font-mono text-xs font-medium text-muted-foreground"
+            >
+              <span
+                className="h-2 w-2 shrink-0 rounded-full"
+                style={{ backgroundColor: item.color }}
+              />
+              {item.label}: <span className="text-foreground">{item.value.toFixed(2)}</span>
+            </span>
+          ))}
         </div>
       )}
-      {/* Custom SMA/EMA right-margin axis tags (see indicatorTags' doc
-          comment) — confined to `right: 3px` inside the widened
-          `rightPriceScale.minimumWidth` gutter, so unlike the native
-          last-value badge these can never overlap the candles/lines in the
-          plot area. `pointer-events-none` so they never intercept clicks
-          meant for the chart underneath (drawing tools, crosshair, pan). */}
-      {indicatorTags.map((tag) => (
-        <div
-          key={tag.id}
-          className="pointer-events-none absolute z-10 max-w-[90px] truncate rounded px-1.5 py-0.5 text-[10px] font-semibold leading-tight text-slate-900 shadow-sm"
-          style={{ right: 3, top: tag.y - 9, backgroundColor: tag.color }}
-          title={`${tag.label}: ${tag.value.toFixed(2)}`}
-        >
-          {tag.label} {tag.value.toFixed(2)}
-        </div>
-      ))}
+      <div
+        ref={containerRef}
+        className={cn(
+          "relative w-full min-w-0 overflow-hidden",
+          fullHeight ? "min-h-0 flex-1" : "h-[320px] sm:h-[400px]",
+          // QA fix (live report: "Eraser cursor doesn't change"): a plain
+          // inline `style.cursor` here used to lose to lightweight-charts'
+          // own inline cursor styling on its internal canvas elements — see
+          // the `.chart-eraser-active`/`.chart-draw-active` !important rules
+          // in globals.css for why a stylesheet class, not inline style, is
+          // what actually wins this fight.
+          drawTool === "eraser" && "chart-eraser-active",
+          drawTool && drawTool !== "eraser" && "chart-draw-active"
+        )}
+        // QA fix (diagnostic: "stale hover tooltip persists after cursor
+        // moves away"): lightweight-charts fires subscribeCrosshairMove with
+        // an empty param (clearing the tooltip) when it detects the pointer
+        // leaving its own canvas via mousemove tracking — but a fast pointer
+        // exit, or the pointer leaving via a click on an element elsewhere on
+        // the page (e.g. a different DataExplorerTabs tab) rather than a
+        // continuous mousemove trail out through the container's edge, can
+        // land outside the chart without that internal handler ever firing.
+        // A plain onMouseLeave on the container is a guaranteed, library-
+        // independent safety net: the browser always fires it when the
+        // pointer's bounding-box exit happens, regardless of how it got
+        // there, so the tooltip can never outlive the cursor being over it.
+        onMouseLeave={() => setTooltip(null)}
+      >
+        {tooltip && (
+          <div
+            className="pointer-events-none absolute z-10 flex flex-col gap-1 rounded-md border border-white/10 bg-slate-900/95 px-3 py-2 shadow-lg backdrop-blur-sm"
+            style={{ left: tooltip.x, top: tooltip.y, width: TOOLTIP_WIDTH }}
+          >
+            <span className="text-[10px] text-muted-foreground">{tooltip.time}</span>
+            <span className="flex items-center gap-1.5 font-mono text-xs font-semibold text-foreground">
+              <span
+                className="h-2 w-2 shrink-0 rounded-full"
+                style={{ backgroundColor: seriesColorRef.current }}
+              />
+              {tooltip.price.toFixed(2)}
+            </span>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
