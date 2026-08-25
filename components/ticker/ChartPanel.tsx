@@ -16,7 +16,6 @@ import {
   SlidersHorizontal,
   Trash2,
   TrendingUp,
-  Waypoints,
 } from "lucide-react";
 import { PriceChart, type ChartMode, type DrawTool } from "./PriceChart";
 import { TIME_RANGES, type TimeRange } from "./TimeRangeSelector";
@@ -80,7 +79,7 @@ function sliceByRange(history: PricePoint[], range: TimeRange): PricePoint[] {
  * Apple-style pill toggle — shared by the range buttons inside the
  * Timeframe popover, the indicator toggles (SMA/EMA/Bollinger/RSI/MACD)
  * inside the Indicators popover, and the drawing-tool chips
- * (trendline/fibonacci/h-line) inside the Edit popover.
+ * (trendline/h-line) inside the Edit popover.
  * Solid glowing primary-color fill when active/armed, translucent glass
  * otherwise — same active-state language (bg-primary + soft primary
  * shadow) already used for the sidebar's active nav item, so this reads as
@@ -323,7 +322,7 @@ export function ChartPanel({ history, currency, symbol, exchange, currentPrice =
   // subtree to a different DOM parent, so React fully unmounts/remounts it
   // (and therefore the whole lightweight-charts instance) on each
   // fullscreen toggle — zoom/pan position resets, but drawn trendlines/
-  // fibonacci/h-lines do not, since those are already reloaded from
+  // h-lines do not, since those are already reloaded from
   // ticker-scoped localStorage on every chart (re)creation regardless (see
   // PriceChart.tsx's persistence layer). `cardContent` is the exact same
   // JSX either way — only the wrapper around it differs — so nothing about
@@ -605,10 +604,12 @@ export function ChartPanel({ history, currency, symbol, exchange, currentPrice =
             )}
           </div>
 
-          {/* "Edit" dropdown — draw tools popover (Trendline/Fibonacci/
-              H-Line/Eraser/Clear All). Selecting Trendline, Fibonacci, or
-              H-Line arms it AND closes the menu (the user's next move is on
-              the canvas, not this popover); Eraser arms but deliberately
+          {/* "Edit" dropdown — draw tools popover (Trendline/H-Line/Eraser/
+              Clear All). Fibonacci removed entirely (live report round 6:
+              "remove it completely — it clutters and fails"), so this is
+              back to the two simple, reliable shapes. Selecting Trendline
+              or H-Line arms it AND closes the menu (the user's next move is
+              on the canvas, not this popover); Eraser arms but deliberately
               leaves the menu open (see its own comment below); "Clear All"
               closes the menu after wiping every drawing. The trigger itself
               goes solid/glowing whenever any tool is currently armed
@@ -650,16 +651,6 @@ export function ChartPanel({ history, currency, symbol, exchange, currentPrice =
                   title="Click a start point, then an end point, to draw a trendline"
                 />
                 <PillToggle
-                  label="Fibonacci"
-                  icon={<Waypoints className="h-3.5 w-3.5" />}
-                  active={drawTool === "fibonacci"}
-                  onClick={() => {
-                    setDrawTool((t) => (t === "fibonacci" ? null : "fibonacci"));
-                    setEditMenuOpen(false);
-                  }}
-                  title="Click a swing high and a swing low (either order) to draw a Fibonacci retracement"
-                />
-                <PillToggle
                   label="H-Line"
                   icon={<Minus className="h-3.5 w-3.5" />}
                   active={drawTool === "horizontal"}
@@ -671,8 +662,8 @@ export function ChartPanel({ history, currency, symbol, exchange, currentPrice =
                 />
                 {/* Eraser (live report: "instead of a blunt Clear All ...
                     add an Eraser tool") — click-to-delete for exactly one
-                    drawing, leaving every other trendline/fibonacci/h-line
-                    intact. Unlike the other tools this one does NOT close
+                    drawing, leaving every other trendline/h-line intact.
+                    Unlike the other tools this one does NOT close
                     the menu on click, and stays armed after each delete
                     (see PriceChart.tsx's eraser branch) so several drawings
                     can be erased in a row; it's disarmed the same way as

@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
   AreaSeries,
-  BaselineSeries,
   CandlestickSeries,
   ColorType,
   CrosshairMode,
@@ -27,14 +26,19 @@ export type ChartMode = "area" | "candlestick";
 
 /**
  * Chart drawing tools (toolbar "Edit"/Tools drawer, see ChartPanel.tsx).
- * "horizontal" completes on a single click; "trendline"/"fibonacci" wait
- * for a second click before drawing anything, see the click handler below.
- * "eraser" is click-to-delete: clicking any single drawn shape removes ONLY
- * that shape (state + localStorage) and leaves the tool armed so multiple
- * shapes can be erased in a row — see the eraser branch in handleClick and
+ * "horizontal" completes on a single click; "trendline" waits for a second
+ * click before drawing anything, see the click handler below. "eraser" is
+ * click-to-delete: clicking any single drawn shape removes ONLY that shape
+ * (state + localStorage) and leaves the tool armed so multiple shapes can
+ * be erased in a row — see the eraser branch in handleClick and
  * findDrawingIdAtPoint below.
+ *
+ * Fibonacci was removed entirely (live report round 6: "remove Fibonacci
+ * completely — it clutters and fails") rather than kept as a fourth,
+ * higher-complexity shape (7 price lines + 6 shaded band series per
+ * drawing) alongside the two simple ones here.
  */
-export type DrawTool = "trendline" | "fibonacci" | "horizontal" | "eraser";
+export type DrawTool = "trendline" | "horizontal" | "eraser";
 
 interface PriceChartProps {
   /**
@@ -79,7 +83,7 @@ interface PriceChartProps {
   drawTool?: DrawTool | null;
   /** Fires once a drawing tool has placed its shape (or been cancelled by Escape) — the parent uses this to un-arm the tool button. */
   onDrawComplete?: () => void;
-  /** Bump this (e.g. a counter) to wipe every user-drawn trendline/fibonacci/horizontal-line from the chart. */
+  /** Bump this (e.g. a counter) to wipe every user-drawn trendline/horizontal-line from the chart. */
   clearDrawingsToken?: number;
   /** Drives area-chart gradient/line color — true = period gained, false = lost. Ignored when overrideColor is set. */
   positive: boolean;
@@ -106,20 +110,29 @@ interface PriceChartProps {
 
 const SUCCESS = "#10B981";
 const DESTRUCTIVE = "#EF4444";
-const SMA_COLOR = "#F59E0B";
-/** One distinct color per selectable EMA period so overlapping EMAs stay visually distinguishable. */
+// Root-cause fix (live report round 6, screenshot evidence: SMA 20 and
+// EMA 150 both rendered as the same indistinguishable orange). The old
+// palette picked colors independently per indicator (SMA_COLOR #F59E0B
+// amber, EMA 150 #FB923C orange) without checking them against each other
+// — two different hues that happen to read as "the same orange" at a thin
+// 2px line width. Replaced with one deliberately spread-out, high-contrast
+// palette (cyan / magenta / purple / orange / yellow) chosen so every
+// SMA/EMA combination that can be active simultaneously is unambiguous at
+// a glance, and cross-checked against SUCCESS/DESTRUCTIVE (candle colors)
+// and DRAW_COLOR (trendline) below so nothing on this chart can collide.
+const SMA_COLOR = "#22D3EE"; // cyan
+/** One distinct, high-contrast color per selectable EMA period — see the palette note above. */
 const EMA_COLORS: Record<number, string> = {
-  50: "#38BDF8",
-  100: "#C084FC",
-  150: "#FB923C",
-  200: "#F472B6",
+  50: "#EC4899", // pink / magenta
+  100: "#A855F7", // purple
+  150: "#FB923C", // orange
+  200: "#FACC15", // bright yellow
 };
-const BOLLINGER_COLOR = "#A78BFA";
+const BOLLINGER_COLOR = "#818CF8"; // indigo — kept distinct from EMA 100's purple above
 const RSI_COLOR = "#38BDF8";
 const MACD_COLOR = "#38BDF8";
 const MACD_SIGNAL_COLOR = "#F59E0B";
 const DRAW_COLOR = "#F59E0B";
-const FIB_COLOR = "#A78BFA";
 
 /** Converts a "#RRGGBB" hex color to an "rgba(r, g, b, alpha)" string for area-chart fills. */
 function hexToRgba(hex: string, alpha: number): string {
@@ -302,14 +315,11 @@ function computeSma(data: PricePoint[], period: number) {
   return result;
 }
 
-/** Standard Fibonacci retracement ratios, drawn from the higher clicked price down to the lower one. */
-const FIB_RATIOS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
-
 type MainSeriesApi = ISeriesApi<"Area"> | ISeriesApi<"Candlestick">;
 
 /**
- * Persistence layer for user-drawn trendlines/fibonacci/h-lines (live
- * report: "drawings disappear on refresh"). Keyed by ticker in localStorage
+ * Persistence layer for user-drawn trendlines/h-lines (live report:
+ * "drawings disappear on refresh"). Keyed by ticker in localStorage
  * (`chart_drawings_<symbol>`) — a plain JSON array of serializable shapes,
  * NOT the lightweight-charts series/price-line objects themselves (those
  * can't survive a reload and are re-created fresh from this data every time
@@ -319,11 +329,15 @@ type MainSeriesApi = ISeriesApi<"Area"> | ISeriesApi<"Candlestick">;
  * "YYYY-MM-DD" string (see how `data`/`fullHistory` feed every series with
  * `time: d.date`), so this intentionally doesn't need to handle the
  * BusinessDay/number variants of lightweight-charts' Time union.
+ *
+ * Fibonacci removed (live report round 6). `isValidStoredDrawing` below no
+ * longer accepts `type: "fibonacci"`, so any drawing saved by an earlier
+ * build simply gets filtered out of `loadDrawings` on next load — a quiet,
+ * graceful migration rather than a crash on old localStorage data.
  */
 type StoredDrawing =
   | { id: string; type: "horizontal"; price: number }
-  | { id: string; type: "trendline"; points: [{ time: string; price: number }, { time: string; price: number }] }
-  | { id: string; type: "fibonacci"; points: [{ time: string; price: number }, { time: string; price: number }] };
+  | { id: string; type: "trendline"; points: [{ time: string; price: number }, { time: string; price: number }] };
 
 /** Every persisted drawing gets a stable id at creation time (see handleClick) — this is what the eraser tool matches against to delete exactly ONE drawing rather than clearing everything. */
 function makeDrawingId(): string {
@@ -341,7 +355,7 @@ function isValidStoredDrawing(value: unknown): value is StoredDrawing {
   const v = value as Record<string, unknown>;
   if (typeof v.id !== "string" || v.id.length === 0) return false;
   if (v.type === "horizontal") return typeof v.price === "number" && Number.isFinite(v.price);
-  if (v.type === "trendline" || v.type === "fibonacci") {
+  if (v.type === "trendline") {
     if (!Array.isArray(v.points) || v.points.length !== 2) return false;
     return v.points.every(
       (p) =>
@@ -453,8 +467,7 @@ export function PriceChart({
   const rsiSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const macdSeriesRef = useRef<ISeriesApi<"Line" | "Histogram">[]>([]);
   // Every currently-on-screen drawing, grouped by its persisted `id` (one
-  // group per trendline/fibonacci/h-line — a fibonacci group holds 7 price
-  // lines + several shaded-band series, a trendline holds 1 line series, an
+  // group per trendline/h-line — a trendline holds 1 line series, an
   // h-line holds 1 price line). Grouped by id (rather than a flat array of
   // series/price-lines) so the eraser tool can remove exactly ONE drawing's
   // on-screen elements without touching any other drawing — see
@@ -485,10 +498,10 @@ export function PriceChart({
     dataDatesRef.current = data.map((d) => d.date);
   }, [data]);
   // Rubber-band preview: a dashed, ghost-colored 2-point line that tracks
-  // the cursor between the first and second click of a trendline/
-  // fibonacci drawing, so the user can see what they're about to draw
-  // instead of clicking twice blind. Lives entirely in the crosshair-move
-  // handler below; removed on finalize, on tool change, and on unmount.
+  // the cursor between the first and second click of a trendline drawing,
+  // so the user can see what they're about to draw instead of clicking
+  // twice blind. Lives entirely in the crosshair-move handler below;
+  // removed on finalize, on tool change, and on unmount.
   const previewSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   // Mirrors of the latest drawTool/onDrawComplete props — the click handler
   // is registered once (creation effect depends only on `locale`) but must
@@ -560,69 +573,6 @@ export function PriceChart({
     return series;
   }
 
-  /** Draws the 7 Fibonacci retracement price lines plus shaded bands between adjacent levels. Returns everything created so the caller can group it under a drawing id. Shared by the live and storage-replay paths. */
-  function drawFibonacciShape(
-    main: MainSeriesApi,
-    chart: IChartApi,
-    aTime: Time,
-    aPrice: number,
-    bTime: Time,
-    bPrice: number
-  ): { priceLines: IPriceLine[]; series: ISeriesApi<SeriesType>[] } {
-    const priceLines: IPriceLine[] = [];
-    const series: ISeriesApi<SeriesType>[] = [];
-
-    const high = Math.max(aPrice, bPrice);
-    const low = Math.min(aPrice, bPrice);
-    const span = high - low;
-    const levels = FIB_RATIOS.map((ratio) => ({ ratio, price: high - ratio * span }));
-
-    for (const level of levels) {
-      priceLines.push(
-        main.createPriceLine({
-          price: level.price,
-          color: FIB_COLOR,
-          lineWidth: 1,
-          lineStyle: LineStyle.Dashed,
-          axisLabelVisible: true,
-          title: `${(level.ratio * 100).toFixed(1)}% · ${level.price.toFixed(2)}`,
-        })
-      );
-    }
-
-    // Shaded bands between each pair of adjacent levels, confined to the
-    // clicked swing's time span (matches the classic fib-box look — the
-    // price LINES above still span the full chart width).
-    const timesSorted = [aTime, bTime].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-    const [t0, t1] = timesSorted;
-    if (t0 !== t1) {
-      for (let i = 0; i < levels.length - 1; i++) {
-        const bandTop = levels[i].price;
-        const bandBottom = levels[i + 1].price;
-        const band = chart.addSeries(BaselineSeries, {
-          baseValue: { type: "price", price: bandBottom },
-          topFillColor1: hexToRgba(FIB_COLOR, 0.12),
-          topFillColor2: hexToRgba(FIB_COLOR, 0.12),
-          topLineColor: "rgba(0, 0, 0, 0)",
-          bottomFillColor1: "rgba(0, 0, 0, 0)",
-          bottomFillColor2: "rgba(0, 0, 0, 0)",
-          bottomLineColor: "rgba(0, 0, 0, 0)",
-          lineWidth: 1,
-          lastValueVisible: false,
-          priceLineVisible: false,
-          crosshairMarkerVisible: false,
-        });
-        band.setData([
-          { time: t0, value: bandTop },
-          { time: t1, value: bandTop },
-        ]);
-        series.push(band);
-      }
-    }
-
-    return { priceLines, series };
-  }
-
   /** Tracks one drawing's chart objects under its id so a later eraser click can remove exactly this drawing (see deleteDrawing) without touching any other. Called after every successful draw, whether live (handleClick) or replayed from storage (renderStoredDrawing). */
   function registerRenderedDrawing(id: string, series: ISeriesApi<SeriesType>[], priceLines: IPriceLine[]) {
     renderedDrawingsRef.current.push({ id, series, priceLines });
@@ -637,10 +587,6 @@ export function PriceChart({
       const [a, b] = drawing.points;
       const line = drawTrendlineShape(chart, a.time, a.price, b.time, b.price);
       if (line) registerRenderedDrawing(drawing.id, [line], []);
-    } else if (drawing.type === "fibonacci") {
-      const [a, b] = drawing.points;
-      const { series, priceLines } = drawFibonacciShape(main, chart, a.time, a.price, b.time, b.price);
-      registerRenderedDrawing(drawing.id, series, priceLines);
     }
   }
 
@@ -659,7 +605,7 @@ export function PriceChart({
     }
   }
 
-  /** Appends one freshly-finalized drawing to the persisted set and saves immediately — called right after a trendline/fibonacci/h-line is placed on the chart (see handleClick below), so a mid-session refresh never loses a drawing. */
+  /** Appends one freshly-finalized drawing to the persisted set and saves immediately — called right after a trendline/h-line is placed on the chart (see handleClick below), so a mid-session refresh never loses a drawing. */
   function persistNewDrawing(drawing: StoredDrawing) {
     savedDrawingsRef.current = [...savedDrawingsRef.current, drawing];
     persistDrawings(symbolRef.current, savedDrawingsRef.current);
@@ -717,34 +663,15 @@ export function PriceChart({
         continue;
       }
 
+      // Only "trendline" reaches here — "horizontal" already returned above,
+      // and fibonacci no longer exists as a drawing type (removed round 6).
       const [a, b] = drawing.points;
       const x1 = timeScale.timeToCoordinate(a.time);
       const x2 = timeScale.timeToCoordinate(b.time);
-
-      if (drawing.type === "trendline") {
-        const y1 = main.priceToCoordinate(a.price);
-        const y2 = main.priceToCoordinate(b.price);
-        if (x1 == null || x2 == null || y1 == null || y2 == null) continue; // an endpoint is outside the currently-rendered range — can't test
-        if (distanceToSegment(x, y, x1, y1, x2, y2) <= ERASER_HIT_TOLERANCE_PX) return drawing.id;
-        continue;
-      }
-
-      // fibonacci: hit if the click is vertically near any of the 7 level
-      // prices AND horizontally within the swing's time span (so clicking
-      // far outside the drawn box doesn't grab a fib whose price lines
-      // technically span the full chart width).
-      if (x1 != null && x2 != null) {
-        const minX = Math.min(x1, x2) - ERASER_HIT_TOLERANCE_PX;
-        const maxX = Math.max(x1, x2) + ERASER_HIT_TOLERANCE_PX;
-        if (x < minX || x > maxX) continue;
-      }
-      const high = Math.max(a.price, b.price);
-      const low = Math.min(a.price, b.price);
-      const span = high - low;
-      for (const ratio of FIB_RATIOS) {
-        const ly = main.priceToCoordinate(high - ratio * span);
-        if (ly != null && Math.abs(ly - y) <= ERASER_HIT_TOLERANCE_PX) return drawing.id;
-      }
+      const y1 = main.priceToCoordinate(a.price);
+      const y2 = main.priceToCoordinate(b.price);
+      if (x1 == null || x2 == null || y1 == null || y2 == null) continue; // an endpoint is outside the currently-rendered range — can't test
+      if (distanceToSegment(x, y, x1, y1, x2, y2) <= ERASER_HIT_TOLERANCE_PX) return drawing.id;
     }
     return null;
   }
@@ -777,7 +704,7 @@ export function PriceChart({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [drawTool]);
 
-  /** Removes every user-drawn trendline/fib/horizontal-line from the chart (all renderedDrawingsRef groups) and empties the tracking ref. Used by both the "Clear Drawings" toolbar action and internally whenever the underlying data set changes (a drawing anchored to old range's dates/prices stops making sense once the range/mode changes). */
+  /** Removes every user-drawn trendline/horizontal-line from the chart (all renderedDrawingsRef groups) and empties the tracking ref. Used by both the "Clear Drawings" toolbar action and internally whenever the underlying data set changes (a drawing anchored to old range's dates/prices stops making sense once the range/mode changes). */
   function clearAllDrawings() {
     removePreviewSeries();
     const chart = chartRef.current;
@@ -865,22 +792,26 @@ export function PriceChart({
     chart.subscribeCrosshairMove(handleCrosshairMove);
 
     /**
-     * Rubber-band drawing preview (live report: "user shouldn't have to
-     * double-click blindly"). Once the FIRST click of a trendline/
-     * fibonacci drawing has set drawStartRef, every subsequent mouse move
-     * updates (or creates, on the very first move) a dashed 2-point ghost
-     * line from that start point to wherever the cursor currently is, so
-     * the shape is visible in real time before the second click locks it
-     * in. Registered as its own subscribeCrosshairMove handler (rather
-     * than folded into handleCrosshairMove above) so the tooltip and the
-     * preview line stay independent concerns — one purely reads state to
-     * render a floating label, the other mutates a chart series.
+     * Trendline rubber-band drawing preview (live report round 6:
+     * "angle & direction control — as the user moves the mouse, a clear
+     * dashed line dynamically rotates and stretches following the
+     * cursor"). Once the FIRST click has set drawStartRef, every
+     * subsequent mouse move updates (or creates, on the very first move) a
+     * dashed 2-point ghost line from that anchor to wherever the cursor
+     * currently is — the line's angle and length are entirely a function
+     * of the live cursor position, recomputed on every event, so slope and
+     * direction are fully under the user's control right up until the
+     * second click locks it in. Registered as its own
+     * subscribeCrosshairMove handler (rather than folded into
+     * handleCrosshairMove above) so the tooltip and the preview line stay
+     * independent concerns — one purely reads state to render a floating
+     * label, the other mutates a chart series.
      */
     function handlePreviewMove(param: MouseEventParams<Time>) {
       const tool = drawToolRef.current;
       const start = drawStartRef.current;
       const main = mainSeriesRef.current;
-      const inProgress = start && (tool === "trendline" || tool === "fibonacci");
+      const inProgress = start && tool === "trendline";
       if (!inProgress || !main || !param.point || param.paneIndex !== 0) {
         removePreviewSeries();
         return;
@@ -922,8 +853,8 @@ export function PriceChart({
 
     /**
      * Chart Tools drawer, drawing tools (ChartPanel.tsx): click-to-draw for
-     * trendline/fibonacci (2 clicks: anchor, then target), horizontal line
-     * (1 click), and click-to-delete for the eraser. Reads drawToolRef/
+     * trendline (2 clicks: anchor, then target), horizontal line (1 click),
+     * and click-to-delete for the eraser. Reads drawToolRef/
      * onDrawCompleteRef rather than the `drawTool`/`onDrawComplete` props
      * directly since this handler is registered once here (effect depends
      * only on `locale`, matching the crosshair handler above) and must
@@ -1013,28 +944,17 @@ export function PriceChart({
         finalTime = resolveDistinctTimeAtX(chartInstance, dataDatesRef.current, param.point.x, start.time) ?? finalTime;
       }
 
+      // "trendline" is the only tool that reaches this point — "horizontal"
+      // already returned above, "eraser" too, and fibonacci no longer
+      // exists (removed round 6).
       try {
-        if (tool === "trendline") {
-          const line = drawTrendlineShape(chartInstance, start.time, start.price, finalTime, price);
-          if (line) {
-            const id = makeDrawingId();
-            registerRenderedDrawing(id, [line], []);
-            persistNewDrawing({
-              id,
-              type: "trendline",
-              points: [
-                { time: String(start.time), price: start.price },
-                { time: String(finalTime), price },
-              ],
-            });
-          }
-        } else if (tool === "fibonacci") {
-          const { series, priceLines } = drawFibonacciShape(main, chartInstance, start.time, start.price, finalTime, price);
+        const line = drawTrendlineShape(chartInstance, start.time, start.price, finalTime, price);
+        if (line) {
           const id = makeDrawingId();
-          registerRenderedDrawing(id, series, priceLines);
+          registerRenderedDrawing(id, [line], []);
           persistNewDrawing({
             id,
-            type: "fibonacci",
+            type: "trendline",
             points: [
               { time: String(start.time), price: start.price },
               { time: String(finalTime), price },
@@ -1088,7 +1008,7 @@ export function PriceChart({
   // stuck"): lightweight-charts' default pan/zoom handling treats even a
   // tiny pointer drift between mousedown and mouseup as a pan gesture
   // rather than a click, which can silently swallow the SECOND click of a
-  // trendline/fibonacci draw (or occasionally the first) without
+  // trendline draw (or occasionally the first) without
   // `subscribeClick` ever firing — nothing visibly happens, so it reads as
   // the tool being "stuck". Disabling scroll/scale entirely for as long as
   // a draw tool is armed removes that ambiguity: every pointer interaction
