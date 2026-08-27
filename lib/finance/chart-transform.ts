@@ -85,14 +85,80 @@ export function getAvailableRanges(totalYears: number): ChartRange[] {
 }
 
 /**
- * Converts the given numeric keys to year-over-year percent change,
- * dropping the first row (no prior year to compare against). Non-numeric
- * or missing values pass through as 0 rather than throwing, since a
- * missing prior-year figure shouldn't crash the whole chart.
+ * Returns the "same period, one year earlier" fiscal-year label for a
+ * genuine annual ("2024" -> "2023") or quarterly ("2024-Q2" -> "2023-Q2")
+ * period — null for anything that isn't that exact shape, specifically the
+ * trailing "TTM"/"MRQ" appendix row (see TRAILING_LABELS above), which has
+ * no such comparator. This is the single canonical period-matching
+ * primitive for every "compare this period to the same period last year"
+ * calculation in the app — toYoY below and RuleOf40Card
+ * (IncomeStatementPanel.tsx) both go through this function, so there is
+ * exactly one definition of what "year-over-year" means, for annual and
+ * quarterly data alike.
+ */
+export function priorPeriodLabel(fiscalYear: string): string | null {
+  const quarterMatch = /^(\d{4})-Q([1-4])$/.exec(fiscalYear);
+  if (quarterMatch) return `${Number(quarterMatch[1]) - 1}-Q${quarterMatch[2]}`;
+  const year = Number(fiscalYear);
+  return Number.isFinite(year) && String(year) === fiscalYear ? String(year - 1) : null;
+}
+
+/**
+ * Converts the given numeric keys to year-over-year percent change.
+ *
+ * QA fix (live bug report: quarterly "View: YoY" systematically distorted
+ * every quarter, most visibly Q4 — matches a bug already fixed once before
+ * for Rule of 40, see priorPeriodLabel's doc comment): this used to diff
+ * each row against the PREVIOUS ARRAY ELEMENT (data[idx] one position
+ * back) — correct for Annual mode, where one array step really is one
+ * year, but silently QUARTER-over-quarter in Quarterly mode, where one
+ * array step is 3 months, not 12. That directly contradicts the "YoY"
+ * label and produces a systematic seasonal distortion — Q4 revenue is
+ * often lower than Q3's for perfectly normal seasonal reasons, so the old
+ * logic mislabeled that seasonal Q4-vs-Q3 dip as a year-over-year decline
+ * every single time, for every ticker with any seasonality. Fixed by
+ * looking up the genuine same-period-last-year row by its fiscal-period
+ * LABEL via priorPeriodLabel(), which can never drift out of alignment the
+ * way pure array-index arithmetic does the moment a period is missing,
+ * synthesized out of order, or the array's start/end shifts under a
+ * different Select Range.
+ *
+ * Data is re-sorted chronologically here rather than trusted from the
+ * caller — this is the single choke point every chart's YoY view goes
+ * through, so defending it here means every caller benefits even if a
+ * future one doesn't pre-sort (aggregate.ts's mergeYearsBySource already
+ * returns its output pre-sorted by fiscalYear, so this is normally a
+ * no-op, not a load-bearing fix on its own).
+ *
+ * IMPORTANT: pass the FULL historical series (+ trailing row, if any) —
+ * not a Select-Range-restricted slice — then apply filterByRange to the
+ * OUTPUT of this function, or the earliest ~year of any restricted range
+ * loses its prior-year comparator purely because that comparator fell
+ * outside the slice, not because it doesn't exist. See useChartControls'
+ * yoy() method, which every panel calls instead of importing toYoY
+ * directly, for exactly this ordering.
+ *
+ * A row with no same-label prior-year counterpart (the earliest period(s)
+ * in the whole series, or a genuine reporting gap) is dropped from the
+ * output entirely rather than shown with a fabricated 0% — different from
+ * a row that HAS a prior-year match but one particular key's value is
+ * missing/non-finite, which still degrades to 0% for just that key so one
+ * bad field doesn't crash the whole chart.
  */
 export function toYoY<T extends { fiscalYear: string }>(data: T[], keys: (keyof T)[]): T[] {
-  const rows = data.slice(1).map((row, idx) => {
-    const prev = data[idx];
+  const sorted = [...data].sort((a, b) => a.fiscalYear.localeCompare(b.fiscalYear));
+  const byLabel = new Map(sorted.map((row) => [row.fiscalYear, row]));
+  const lastHistorical = [...sorted].reverse().find((row) => !TRAILING_LABELS.has(row.fiscalYear)) ?? null;
+
+  const rows: T[] = [];
+  for (const row of sorted) {
+    const prev = TRAILING_LABELS.has(row.fiscalYear)
+      ? lastHistorical
+      : (() => {
+          const label = priorPeriodLabel(row.fiscalYear);
+          return label ? (byLabel.get(label) ?? null) : null;
+        })();
+    if (!prev) continue; // no real comparator — drop rather than fabricate
     const out = { ...row } as T;
     for (const key of keys) {
       const curVal = Number(row[key]);
@@ -100,8 +166,8 @@ export function toYoY<T extends { fiscalYear: string }>(data: T[], keys: (keyof 
       const pct = Number.isFinite(curVal) && Number.isFinite(prevVal) && prevVal !== 0 ? ((curVal - prevVal) / Math.abs(prevVal)) * 100 : 0;
       (out as Record<string, unknown>)[key as string] = Number(pct.toFixed(1));
     }
-    return out;
-  });
+    rows.push(out);
+  }
   return rows;
 }
 

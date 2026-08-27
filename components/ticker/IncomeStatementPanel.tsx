@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { Bar, BarChart, CartesianGrid, Cell, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { CashFlowYear, IncomeStatementYear } from "@/lib/finance/types";
 import { CHART_COLORS, CHART_TOOLTIP_WRAPPER_STYLE, compactAxis } from "@/lib/format/chart";
-import { computeAverage, splitTrailingRow, toPctOfRevenue, toYoY, type ChartView } from "@/lib/finance/chart-transform";
+import { computeAverage, priorPeriodLabel, splitTrailingRow, toPctOfRevenue, type ChartView } from "@/lib/finance/chart-transform";
 import { useChartControls } from "@/lib/finance/useChartControls";
 import { ChartTooltip } from "./ChartTooltip";
 import { SourceAttributionBadge } from "./SourceAttributionBadge";
@@ -324,7 +324,7 @@ function MetricCard({
 
   const data =
     controls.view === "yoy"
-      ? toYoY(controls.ranged, [dataKey])
+      ? controls.yoy([dataKey])
       : controls.view === "pctOfRevenue" && allowPctOfRevenue
         ? toPctOfRevenue(controls.ranged, [dataKey], "totalRevenue")
         : controls.ranged;
@@ -390,22 +390,6 @@ interface RuleOf40CardProps {
 }
 
 /**
- * Returns the "same period, one year earlier" fiscal-year label for a
- * genuine annual ("2024" -> "2023") or quarterly ("2024-Q2" -> "2023-Q2")
- * period. Null for anything that isn't that exact shape — specifically the
- * trailing "TTM"/"MRQ" appendix row, which has no such comparator (see
- * RuleOf40Card's doc comment for how that row is handled instead).
- */
-function priorYearPeriodLabel(fiscalYear: string): string | null {
-  const quarterMatch = /^(\d{4})-Q([1-4])$/.exec(fiscalYear);
-  if (quarterMatch) {
-    return `${Number(quarterMatch[1]) - 1}-Q${quarterMatch[2]}`;
-  }
-  const year = Number(fiscalYear);
-  return Number.isFinite(year) && String(year) === fiscalYear ? String(year - 1) : null;
-}
-
-/**
  * Rule of 40 = YoY Revenue Growth % + FCF Margin % (per the Phase 5 spec).
  *
  * QA fix (live report: quarterly Rule of 40 bars swinging wildly quarter to
@@ -417,8 +401,9 @@ function priorYearPeriodLabel(fiscalYear: string): string | null {
  * contradicting this card's own "YoY Revenue Growth %" spec and producing
  * far noisier, seasonally-distorted numbers than the metric is supposed to
  * show. Fixed by looking up the genuine same-quarter-last-year (or
- * same-year-last-year) row by its fiscal-period LABEL via
- * priorYearPeriodLabel(), from the FULL unfiltered `controls.historical`
+ * same-year-last-year) row by its fiscal-period LABEL via the shared
+ * priorPeriodLabel() (chart-transform.ts — also what toYoY uses now, see
+ * its doc comment), from the FULL unfiltered `controls.historical`
  * array rather than the range-windowed `controls.ranged` — which also
  * means a period can now show real YoY growth even when it's the very
  * first bar in the currently-selected Select Range window, as long as the
@@ -465,12 +450,12 @@ function RuleOf40Card({ income, incomeQuarterly, cashFlow, cashFlowQuarterly, ex
 
   const ruleOf40Data = controls.ranged
     .map((year, idx) => {
-      const priorLabel = priorYearPeriodLabel(year.fiscalYear);
+      const priorLabel = priorPeriodLabel(year.fiscalYear);
       // Genuine same-period-last-year comparator when the label maps to
       // one (every real annual/quarterly row) — pulled from the FULL
       // historical array so it's available even for the range window's
       // first displayed bar. The trailing TTM/MRQ row has no such label
-      // (see priorYearPeriodLabel), so it keeps this card's original,
+      // (see priorPeriodLabel), so it keeps this card's original,
       // more approximate "vs. whatever immediately precedes it in the
       // displayed range" behavior instead — unchanged from before this
       // fix, since that row was never part of the QoQ/YoY bug to begin

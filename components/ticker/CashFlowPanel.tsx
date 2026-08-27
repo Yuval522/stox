@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { CashFlowYear } from "@/lib/finance/types";
 import { CHART_COLORS, CHART_TOOLTIP_WRAPPER_STYLE, compactAxis, shouldFlipTooltip } from "@/lib/format/chart";
-import { splitTrailingRow, toPctOfRevenue, toYoY, type ChartView } from "@/lib/finance/chart-transform";
+import { splitTrailingRow, toPctOfRevenue, type ChartView } from "@/lib/finance/chart-transform";
 import { useChartControls } from "@/lib/finance/useChartControls";
 import { ChartCard } from "./ChartCard";
 import { ChartControls } from "./ChartControls";
@@ -146,7 +146,7 @@ function MultiMetricCard({
   const keys = options.map((o) => o.key) as (keyof CashFlowYear)[];
   const data =
     controls.view === "yoy"
-      ? toYoY(controls.ranged, keys)
+      ? controls.yoy(keys)
       : controls.view === "pctOfRevenue" && showPctOfRevenue
         ? toPctOfRevenue(controls.ranged, keys, "totalRevenue")
         : controls.ranged;

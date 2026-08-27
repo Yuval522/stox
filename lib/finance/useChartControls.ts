@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import {
   filterByRange,
   splitTrailingRow,
+  toYoY,
   type ChartRange,
   type ChartType,
   type ChartView,
@@ -20,7 +21,15 @@ export interface ChartControlsState<T extends { fiscalYear: string }> {
   setView: (view: ChartView) => void;
   /** The active (annual or quarterly, per `chartType`) dataset with any TTM/MRQ trailing row removed, unfiltered by range — feeds totalYears and SourceAttributionBadge. */
   historical: T[];
-  /** `historical` sliced by the current Select Range, with the trailing TTM/MRQ row (if present) always re-appended — this is what the chart should render. */
+  /**
+   * `historical` sliced by the current Select Range, with the trailing
+   * TTM/MRQ row (if present) always re-appended — this is what the chart
+   * should render for Absolute or % of Revenue view. Do NOT feed this
+   * directly into toYoY for the YoY view — it's already range-restricted,
+   * so the earliest visible period(s) would lose their prior-year
+   * comparator purely because that comparator fell outside this slice. Use
+   * yoy() below instead.
+   */
   ranged: T[];
   /** Total real fiscal periods (in years) available for the active chart type — feeds ChartControls' getAvailableRanges. */
   totalYears: number;
@@ -33,6 +42,19 @@ export interface ChartControlsState<T extends { fiscalYear: string }> {
    * not because state is shared across cards.
    */
   rangeOther<U extends { fiscalYear: string }>(otherAnnual: U[], otherQuarterly?: U[]): U[];
+  /**
+   * The correct way to get YoY data for this card's active dataset: runs
+   * toYoY() over the FULL historical series (+ trailing row) — never just
+   * `ranged` — so every period has a genuine shot at finding its
+   * prior-year comparator, then applies this hook's own current Select
+   * Range to the RESULT. See toYoY's doc comment (chart-transform.ts) for
+   * why computing YoY before range-restricting, rather than after, is the
+   * part that actually matters — the earliest bars in any restricted
+   * range would otherwise be dropped or wrong. Same pattern RuleOf40Card
+   * (IncomeStatementPanel.tsx) already used by hand before this existed as
+   * a shared method.
+   */
+  yoy(keys: (keyof T)[]): T[];
   /**
    * Resets chartType/range/view back to this hook's own initial defaults
    * (Annually / the same "5 years, or All if fewer" rule the initial
@@ -124,6 +146,13 @@ export function useChartControls<T extends { fiscalYear: string }>(
     return otherTrailing ? [...base, otherTrailing] : base;
   }
 
+  function yoy(keys: (keyof T)[]): T[] {
+    const full = trailing ? [...historical, trailing] : historical;
+    const { historical: yoyHistorical, trailing: yoyTrailing } = splitTrailingRow(toYoY(full, keys));
+    const base = filterByRange(yoyHistorical, range, periodsPerYear);
+    return yoyTrailing ? [...base, yoyTrailing] : base;
+  }
+
   const totalYears = chartType === "quarterly" ? Math.floor(historical.length / 4) : historical.length;
 
   return {
@@ -138,6 +167,7 @@ export function useChartControls<T extends { fiscalYear: string }>(
     ranged,
     totalYears,
     rangeOther,
+    yoy,
     reset,
   };
 }

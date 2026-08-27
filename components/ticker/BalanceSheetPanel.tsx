@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { BalanceSheetYear } from "@/lib/finance/types";
 import { CHART_COLORS, CHART_TOOLTIP_WRAPPER_STYLE, compactAxis } from "@/lib/format/chart";
-import { splitTrailingRow, toYoY } from "@/lib/finance/chart-transform";
+import { splitTrailingRow } from "@/lib/finance/chart-transform";
 import { useChartControls } from "@/lib/finance/useChartControls";
 import { ChartCard } from "./ChartCard";
 import { ChartTooltip } from "./ChartTooltip";
@@ -102,7 +102,7 @@ function MultiMetricCard({
     });
 
   const keys = options.map((o) => o.key) as (keyof BalanceSheetYear)[];
-  const data = controls.view === "yoy" ? toYoY(controls.ranged, keys) : controls.ranged;
+  const data = controls.view === "yoy" ? controls.yoy(keys) : controls.ranged;
   const axisFormatter = controls.view === "yoy" ? (v: number) => `${v}%` : compactAxis;
   const tooltipFormatter = (value: unknown) =>
     controls.view === "yoy"
