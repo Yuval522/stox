@@ -47,6 +47,7 @@
  */
 
 import type { BalanceSheetYear, CashFlowYear, IncomeStatementYear } from "../types";
+import { normalizeCapex, normalizeStockBasedComp, computeFreeCashFlow } from "../aggregate";
 
 /**
  * QA fix (bug report: "5Y/10Y range still only shows ~3-4 years despite the
@@ -1290,16 +1291,24 @@ function toSecCashFlowRows(
   const periods = new Set([...operatingCashFlow.keys(), ...netIncome.keys()]);
   const rows: CashFlowYear[] = [];
   for (const fiscalYear of periods) {
-    const ocf = operatingCashFlow.get(fiscalYear);
+    const ocf = operatingCashFlow.get(fiscalYear) ?? 0;
     const ni = netIncome.get(fiscalYear);
-    if (ocf == null && ni == null) continue;
-    const capexNegative = capex.has(fiscalYear) ? -Math.abs(capex.get(fiscalYear)!) : 0;
+    if (!operatingCashFlow.has(fiscalYear) && ni == null) continue;
+    // Sign standardization (live request: "unified, foolproof FCF formula
+    // globally") — same two shared primitives every other provider's
+    // mapping function uses (see aggregate.ts's doc comment on
+    // normalizeCapex/normalizeStockBasedComp/computeFreeCashFlow for the
+    // full rationale). This replaces the previous inline `-Math.abs(...)`,
+    // which was correct but duplicated the exact same logic ad hoc instead
+    // of sharing one audited implementation with yahoo.ts's two mapping
+    // functions.
+    const capitalExpenditures = normalizeCapex(capex.get(fiscalYear) ?? 0);
     rows.push({
       fiscalYear,
-      operatingCashFlow: ocf ?? 0,
-      freeCashFlow: (ocf ?? 0) + capexNegative,
-      stockBasedCompensation: stockBasedComp.get(fiscalYear) ?? 0,
-      capitalExpenditures: capexNegative,
+      operatingCashFlow: ocf,
+      freeCashFlow: computeFreeCashFlow(ocf, capitalExpenditures),
+      stockBasedCompensation: normalizeStockBasedComp(stockBasedComp.get(fiscalYear) ?? 0),
+      capitalExpenditures,
       netIncome: ni ?? 0,
       dataSource: "sec-edgar",
     });
@@ -1395,7 +1404,7 @@ function synthesizeCashFlowQ4(annual: CashFlowYear[], quarterly: CashFlowYear[])
     synthesized.push({
       fiscalYear: q4Key,
       operatingCashFlow,
-      freeCashFlow: operatingCashFlow + capitalExpenditures,
+      freeCashFlow: computeFreeCashFlow(operatingCashFlow, capitalExpenditures),
       stockBasedCompensation:
         fy.stockBasedCompensation - q1.stockBasedCompensation - q2.stockBasedCompensation - q3.stockBasedCompensation,
       capitalExpenditures,
@@ -1517,32 +1526,6 @@ export async function fetchSecFinancials(symbol: string): Promise<SecFinancials>
     if (!facts) {
       console.warn(`[Stox] SEC EDGAR company-facts response for ${symbol} (CIK ${match.cik}) had no us-gaap facts.`);
       return { status: "unavailable", ...empty };
-    }
-
-    // TEMP DEBUG (2026-08-28, remove after inspecting): dumps the RAW,
-    // as-filed XBRL entries for every candidate Operating Cash Flow / CapEx
-    // / Stock-Based Compensation tag this file checks (see toSecCashFlowRows
-    // below), straight off `facts` before ANY of this module's own
-    // priority-pick / cumulative-quarter-reconstruction / sign-normalization
-    // logic runs. This is the deepest "source" layer available — the exact
-    // tag names + values SEC itself has on file, one entry per filing.
-    if (symbol.toUpperCase() === "CRM") {
-      const debugTags = {
-        operatingCashFlow: ["NetCashProvidedByUsedInOperatingActivities", "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"],
-        capitalExpenditures: ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsForCapitalImprovements", "PaymentsToAcquireProductiveAssets"],
-        stockBasedCompensation: ["ShareBasedCompensation", "AllocatedShareBasedCompensationExpense"],
-      };
-      const dump: Record<string, Record<string, unknown>> = {};
-      for (const [label, tags] of Object.entries(debugTags)) {
-        dump[label] = {};
-        for (const tag of tags) {
-          const entries = facts[tag]?.units?.USD;
-          dump[label][tag] = entries
-            ? entries.map((e) => ({ val: e.val, start: e.start, end: e.end, fy: e.fy, fp: e.fp, form: e.form, filed: e.filed }))
-            : "(tag not present in SEC company-facts for this filer)";
-        }
-      }
-      console.log(`[TEMP DEBUG] SEC EDGAR raw cash-flow XBRL facts for CRM:\n${JSON.stringify(dump, null, 2)}`);
     }
 
     // Same XBRL payload backs both — no extra network round trip needed for

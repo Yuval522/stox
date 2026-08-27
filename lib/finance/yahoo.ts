@@ -14,6 +14,9 @@ import {
   backfillCashFlowRevenue,
   filterRowsBeforeListing,
   filterPricePointsBeforeListing,
+  normalizeCapex,
+  normalizeStockBasedComp,
+  computeFreeCashFlow,
 } from "./aggregate";
 import { computeTrailingTwelveMonths } from "./ttm";
 import { guessCurrencyForSearchResult, toExchangeBadge } from "./exchange";
@@ -435,6 +438,14 @@ function toMetrics(
   const marketCap = summaryDetail?.marketCap ?? null;
   const trailingPE = summaryDetail?.trailingPE ?? null;
 
+  // Last-resort fallback to Yahoo's own `financialData` summary module
+  // (fin?.operatingCashflow / fin?.freeCashflow) only fires when
+  // cashFlowTrailing (built via mapCashFlowRow -> computeFreeCashFlow, see
+  // aggregate.ts) is entirely unavailable for this symbol. financialData
+  // exposes a single pre-netted freeCashflow figure with no separate CapEx
+  // field, so there's nothing to sign-normalize or recompute here — it's
+  // read as-is, intentionally, and only ever stands in alone rather than
+  // mixing with unified-formula rows in the same series.
   const operatingCashflow = cashFlowTrailing?.operatingCashFlow ?? fin?.operatingCashflow ?? null;
   const freeCashflow = cashFlowTrailing?.freeCashFlow ?? fin?.freeCashflow ?? null;
   const totalCash = balanceMRQ?.totalCash ?? fin?.totalCash ?? null;
@@ -821,10 +832,27 @@ function toBalanceRows(
  * 2024" list, so this uses the recommended replacement instead. Field
  * names verified directly against fundamentalsTimeSeries.d.ts (all typed
  * `?: number`, none hardcoded-null): operatingCashFlow, freeCashFlow,
- * stockBasedCompensation, capitalExpenditure. Sign convention preserved
- * as-is from the provider rather than normalized: SBC comes back positive
- * (a non-cash addback to net income), capex comes back negative (an
- * investing outflow) — the UI renders each with its natural sign.
+ * stockBasedCompensation, capitalExpenditure.
+ *
+ * Root-cause fix (live request: "standardize sign convention + a unified,
+ * foolproof FCF formula globally, preventing sign inversions/field-mapping
+ * errors/discrepancies against official reports"): this used to trust
+ * Yahoo's raw `capitalExpenditure` sign as-is on the ASSUMPTION it always
+ * comes back negative, and trusted Yahoo's own `freeCashFlow` field
+ * verbatim — but Yahoo's own FCF figure is computed by Yahoo's own
+ * (undocumented, and not necessarily identical to SEC EDGAR's or FMP's)
+ * definition. In a whole-row-per-fiscal-year multi-source merge
+ * (aggregate.ts), trusting each provider's own FCF field means the exact
+ * SAME company's FCF trend can show a discontinuity or even a sign flip
+ * purely because the winning source for one year differs from the
+ * winning source for the adjacent year — with no underlying business
+ * reason. Now uses the same two shared primitives every other provider's
+ * mapping function uses (see aggregate.ts's doc comment for the full
+ * rationale): normalizeCapex() forces capex to always be negative
+ * regardless of the raw sign, and computeFreeCashFlow() is the ONE
+ * formula (Operating Cash Flow + CapEx) used everywhere in this codebase
+ * to derive FCF — Yahoo's own `row.freeCashFlow` field is intentionally
+ * never read.
  *
  * Note: the cash-flow module has no plain `netIncome` field (unlike the
  * balance-sheet/financials modules) — its closest equivalent is
@@ -832,11 +860,13 @@ function toBalanceRows(
  */
 /** Per-row field extraction shared by toCashFlowRows and toTrailingCashFlowRow below. */
 function mapCashFlowRow(row: FundamentalsTimeSeriesCashFlowResult): Omit<CashFlowYear, "fiscalYear"> {
+  const operatingCashFlow = row.operatingCashFlow ?? 0;
+  const capitalExpenditures = normalizeCapex(row.capitalExpenditure ?? 0);
   return {
-    operatingCashFlow: row.operatingCashFlow ?? 0,
-    freeCashFlow: row.freeCashFlow ?? 0,
-    stockBasedCompensation: row.stockBasedCompensation ?? 0,
-    capitalExpenditures: row.capitalExpenditure ?? 0,
+    operatingCashFlow,
+    freeCashFlow: computeFreeCashFlow(operatingCashFlow, capitalExpenditures),
+    stockBasedCompensation: normalizeStockBasedComp(row.stockBasedCompensation ?? 0),
+    capitalExpenditures,
     netIncome: row.netIncomeFromContinuingOperations ?? 0,
     dataSource: "yahoo" as const,
   };
@@ -937,19 +967,35 @@ function fmpBalanceToYears(rows: FmpBalanceSheetStatement[] | null): BalanceShee
     });
 }
 
+/**
+ * Same root-cause fix as mapCashFlowRow above, applied to FMP's cash-flow
+ * endpoint (the third-tier/last-resort layer — see this file's module doc
+ * comment): FMP's `capitalExpenditure` sign was never actually verified
+ * live (network access to financialmodelingprep.com is blocked in this
+ * sandbox — see providers/fmp.ts's module doc comment), so trusting its
+ * raw sign was an unconfirmed assumption, not a fact. normalizeCapex()
+ * makes that assumption irrelevant — capex is forced negative regardless
+ * of what FMP actually sends — and FMP's own `freeCashFlow` field is
+ * never read; computeFreeCashFlow() derives it the same way every other
+ * source does.
+ */
 function fmpCashFlowToYears(rows: FmpCashFlowStatement[] | null): CashFlowYear[] {
   if (!rows) return [];
   return rows
     .filter((r) => r.calendarYear)
-    .map((r) => ({
-      fiscalYear: fmpPeriodKey(r),
-      operatingCashFlow: r.operatingCashFlow ?? 0,
-      freeCashFlow: r.freeCashFlow ?? 0,
-      stockBasedCompensation: r.stockBasedCompensation ?? 0,
-      capitalExpenditures: r.capitalExpenditure ?? 0,
-      netIncome: r.netIncome ?? 0,
-      dataSource: "fmp" as const,
-    }));
+    .map((r) => {
+      const operatingCashFlow = r.operatingCashFlow ?? 0;
+      const capitalExpenditures = normalizeCapex(r.capitalExpenditure ?? 0);
+      return {
+        fiscalYear: fmpPeriodKey(r),
+        operatingCashFlow,
+        freeCashFlow: computeFreeCashFlow(operatingCashFlow, capitalExpenditures),
+        stockBasedCompensation: normalizeStockBasedComp(r.stockBasedCompensation ?? 0),
+        capitalExpenditures,
+        netIncome: r.netIncome ?? 0,
+        dataSource: "fmp" as const,
+      };
+    });
 }
 
 /**
@@ -1442,37 +1488,6 @@ export async function getFundamentals(symbolRaw: string): Promise<FundamentalsBu
         fetchFmpBalanceSheetsQuarterly(symbol).catch(() => null),
         fetchFmpCashFlowStatementsQuarterly(symbol).catch(() => null),
       ]);
-
-      // TEMP DEBUG (2026-08-28, remove after inspecting): raw Yahoo
-      // fundamentalsTimeSeries cash-flow rows (annual/quarterly/trailing)
-      // and raw FMP cash-flow rows (annual/quarterly), exactly as returned
-      // by each provider's own SDK/API call — none of this file's
-      // toCashFlowRows/toTrailingCashFlowRow/fmpCashFlowToYears mapping, the
-      // multi-source merge (aggregate.ts), or any UI-facing sign/percent
-      // formatting has run on these yet. See providers/sec-edgar.ts for the
-      // matching raw-XBRL-tag dump (the third source in the merge).
-      if (symbol.toUpperCase() === "CRM") {
-        console.log(
-          "[TEMP DEBUG] Yahoo raw cashFlowRows (annual, fundamentalsTimeSeries module: cash-flow):\n" +
-            JSON.stringify(cashFlowRows, null, 2)
-        );
-        console.log(
-          "[TEMP DEBUG] Yahoo raw cashFlowRowsQuarterly (fundamentalsTimeSeries type: quarterly, module: cash-flow):\n" +
-            JSON.stringify(cashFlowRowsQuarterly, null, 2)
-        );
-        console.log(
-          "[TEMP DEBUG] Yahoo raw trailingCashFlowRows (fundamentalsTimeSeries type: trailing, module: cash-flow — TTM):\n" +
-            JSON.stringify(trailingCashFlowRows, null, 2)
-        );
-        console.log(
-          "[TEMP DEBUG] FMP raw fmpCashFlowRows (annual, /cash-flow-statement endpoint):\n" +
-            JSON.stringify(fmpCashFlowRows, null, 2)
-        );
-        console.log(
-          "[TEMP DEBUG] FMP raw fmpCashFlowRowsQuarterly (/cash-flow-statement?period=quarter):\n" +
-            JSON.stringify(fmpCashFlowRowsQuarterly, null, 2)
-        );
-      }
 
       const quote = quotes[0];
       if (!quote || quote.price == null) {

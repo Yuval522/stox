@@ -59,6 +59,71 @@ export interface SourceLayer<T extends YearRow> {
   years: T[];
 }
 
+/**
+ * Global cash-flow sign convention + Free Cash Flow standardization (live
+ * request: "audit and standardize how CapEx, SBC, and OCF are parsed and
+ * signed across all providers ... a unified, foolproof FCF formula
+ * globally, preventing any sign inversions, field-mapping errors, or
+ * discrepancies against official reports for all assets").
+ *
+ * Every provider (Yahoo, SEC EDGAR, FMP) exposes its own "free cash flow"
+ * figure computed by that provider's own, undocumented definition — not
+ * guaranteed to agree with either of the other two, or with the company's
+ * own reported figure. Since this app merges cash-flow rows WHOLE-ROW-PER-
+ * FISCAL-YEAR by source priority (mergeYearsBySource below), trusting each
+ * provider's own FCF field verbatim means the exact same company's FCF
+ * trend could show a discontinuity, or even flip sign, purely because the
+ * winning source for one year differs from the winning source for the
+ * adjacent year — with no real business reason behind it. Same risk, one
+ * level down, for CapEx/SBC sign: a provider that (or a future API
+ * version that) reports CapEx as a positive "amount spent" instead of a
+ * negative investing outflow would silently ADD to Free Cash Flow instead
+ * of subtracting, understating leverage on FCF-based ratios everywhere
+ * downstream (FCF Yield, P/FCF, DCF inputs — see valuation-methods.ts /
+ * fair-value.ts) without any visible error.
+ *
+ * The fix is structural, not per-source: every one of this app's three
+ * CashFlowYear-mapping functions (mapCashFlowRow/fmpCashFlowToYears in
+ * yahoo.ts, toSecCashFlowRows in providers/sec-edgar.ts) — and the TTM
+ * rollup engine (ttm.ts) that sums 4 quarters of already-mapped rows —
+ * MUST go through these three functions and nothing else:
+ *   - normalizeCapex(): forces CapEx to always be <= 0 (an investing
+ *     outflow), regardless of the raw sign a provider happens to report.
+ *   - normalizeStockBasedComp(): forces SBC to always be >= 0 (a non-cash
+ *     addback to net income), same rationale.
+ *   - computeFreeCashFlow(): the ONE formula for FCF used everywhere in
+ *     this codebase — Operating Cash Flow + CapEx (CapEx already
+ *     guaranteed negative by normalizeCapex()) — so every fiscal year,
+ *     every quarter, and every TTM row, from every source, for every
+ *     symbol, is provably self-consistent (freeCashFlow ===
+ *     operatingCashFlow + capitalExpenditures, always) instead of each
+ *     provider's own possibly-divergent figure.
+ * No provider's own `freeCashFlow` field is ever read anywhere in the
+ * CashFlowYear pipeline (annual rows, quarterly rows, or TTM rollups) as of
+ * this fix — grep for `.freeCashFlow` on a raw provider response type (not
+ * a `CashFlowYear`) to confirm before touching this again. The one
+ * intentional exception is `toMetrics()` in yahoo.ts, which falls back to
+ * Yahoo's own pre-netted `financialData.freeCashflow` summary field ONLY
+ * when no structured cash-flow row (from any source) exists at all for
+ * that symbol — that module exposes a single already-netted number with no
+ * separate CapEx field to normalize, so there is nothing to recompute; it
+ * never participates in a historical series next to unified-formula rows,
+ * only stands in alone as a last resort. See the comment at that call site.
+ */
+export function normalizeCapex(raw: number): number {
+  const abs = Math.abs(raw);
+  return abs === 0 ? 0 : -abs; // avoid a stray "-0" reaching formatters/UI
+}
+
+export function normalizeStockBasedComp(raw: number): number {
+  return Math.abs(raw);
+}
+
+/** CapEx must already be sign-normalized (<= 0) via normalizeCapex() before calling this — see the module doc comment above for why. */
+export function computeFreeCashFlow(operatingCashFlow: number, capitalExpendituresNegative: number): number {
+  return operatingCashFlow + capitalExpendituresNegative;
+}
+
 /** Relative difference between two finite numbers, symmetric and 0..~2 scale (not clamped). */
 function relativeDifference(a: number, b: number): number {
   const denom = Math.max(Math.abs(a), Math.abs(b));
