@@ -1443,6 +1443,37 @@ export async function getFundamentals(symbolRaw: string): Promise<FundamentalsBu
         fetchFmpCashFlowStatementsQuarterly(symbol).catch(() => null),
       ]);
 
+      // TEMP DEBUG (2026-08-28, remove after inspecting): raw Yahoo
+      // fundamentalsTimeSeries cash-flow rows (annual/quarterly/trailing)
+      // and raw FMP cash-flow rows (annual/quarterly), exactly as returned
+      // by each provider's own SDK/API call — none of this file's
+      // toCashFlowRows/toTrailingCashFlowRow/fmpCashFlowToYears mapping, the
+      // multi-source merge (aggregate.ts), or any UI-facing sign/percent
+      // formatting has run on these yet. See providers/sec-edgar.ts for the
+      // matching raw-XBRL-tag dump (the third source in the merge).
+      if (symbol.toUpperCase() === "CRM") {
+        console.log(
+          "[TEMP DEBUG] Yahoo raw cashFlowRows (annual, fundamentalsTimeSeries module: cash-flow):\n" +
+            JSON.stringify(cashFlowRows, null, 2)
+        );
+        console.log(
+          "[TEMP DEBUG] Yahoo raw cashFlowRowsQuarterly (fundamentalsTimeSeries type: quarterly, module: cash-flow):\n" +
+            JSON.stringify(cashFlowRowsQuarterly, null, 2)
+        );
+        console.log(
+          "[TEMP DEBUG] Yahoo raw trailingCashFlowRows (fundamentalsTimeSeries type: trailing, module: cash-flow — TTM):\n" +
+            JSON.stringify(trailingCashFlowRows, null, 2)
+        );
+        console.log(
+          "[TEMP DEBUG] FMP raw fmpCashFlowRows (annual, /cash-flow-statement endpoint):\n" +
+            JSON.stringify(fmpCashFlowRows, null, 2)
+        );
+        console.log(
+          "[TEMP DEBUG] FMP raw fmpCashFlowRowsQuarterly (/cash-flow-statement?period=quarter):\n" +
+            JSON.stringify(fmpCashFlowRowsQuarterly, null, 2)
+        );
+      }
+
       const quote = quotes[0];
       if (!quote || quote.price == null) {
         throw new MarketDataError(`No live quote for ${symbol}`);

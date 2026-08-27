@@ -1519,6 +1519,32 @@ export async function fetchSecFinancials(symbol: string): Promise<SecFinancials>
       return { status: "unavailable", ...empty };
     }
 
+    // TEMP DEBUG (2026-08-28, remove after inspecting): dumps the RAW,
+    // as-filed XBRL entries for every candidate Operating Cash Flow / CapEx
+    // / Stock-Based Compensation tag this file checks (see toSecCashFlowRows
+    // below), straight off `facts` before ANY of this module's own
+    // priority-pick / cumulative-quarter-reconstruction / sign-normalization
+    // logic runs. This is the deepest "source" layer available — the exact
+    // tag names + values SEC itself has on file, one entry per filing.
+    if (symbol.toUpperCase() === "CRM") {
+      const debugTags = {
+        operatingCashFlow: ["NetCashProvidedByUsedInOperatingActivities", "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"],
+        capitalExpenditures: ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsForCapitalImprovements", "PaymentsToAcquireProductiveAssets"],
+        stockBasedCompensation: ["ShareBasedCompensation", "AllocatedShareBasedCompensationExpense"],
+      };
+      const dump: Record<string, Record<string, unknown>> = {};
+      for (const [label, tags] of Object.entries(debugTags)) {
+        dump[label] = {};
+        for (const tag of tags) {
+          const entries = facts[tag]?.units?.USD;
+          dump[label][tag] = entries
+            ? entries.map((e) => ({ val: e.val, start: e.start, end: e.end, fy: e.fy, fp: e.fp, form: e.form, filed: e.filed }))
+            : "(tag not present in SEC company-facts for this filer)";
+        }
+      }
+      console.log(`[TEMP DEBUG] SEC EDGAR raw cash-flow XBRL facts for CRM:\n${JSON.stringify(dump, null, 2)}`);
+    }
+
     // Same XBRL payload backs both — no extra network round trip needed for
     // the quarterly (10-Q) series alongside the annual (10-K/20-F) one.
     //
