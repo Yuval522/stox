@@ -17,6 +17,7 @@ import {
   normalizeCapex,
   normalizeStockBasedComp,
   computeFreeCashFlow,
+  fiscalYearForPeriodEnd,
 } from "./aggregate";
 import { computeTrailingTwelveMonths } from "./ttm";
 import { guessCurrencyForSearchResult, toExchangeBadge } from "./exchange";
@@ -640,7 +641,11 @@ function makeFiscalQuarterLabelFn(fiscalYearEndMonth: number): PeriodLabelFn {
     // nearest quarter (tolerates a quarter-end date landing a few weeks
     // into the adjacent month, e.g. a 52/53-week fiscal calendar).
     const quarter = Math.ceil(monthsSinceFyEnd / 3) || 4;
-    const fiscalYear = date.getMonth() > fiscalYearEndMonth ? date.getFullYear() + 1 : date.getFullYear();
+    // See fiscalYearForPeriodEnd's doc comment (aggregate.ts) — extracted
+    // to a shared primitive so sec-edgar.ts's quarterlySeries can compute
+    // the identical fiscal-year rollover for SEC EDGAR's own quarterly
+    // rows, rather than each source carrying its own copy of this formula.
+    const fiscalYear = fiscalYearForPeriodEnd(date, fiscalYearEndMonth);
     return `${fiscalYear}-Q${quarter}`;
   };
 }

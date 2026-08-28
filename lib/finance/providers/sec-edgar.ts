@@ -47,7 +47,7 @@
  */
 
 import type { BalanceSheetYear, CashFlowYear, IncomeStatementYear } from "../types";
-import { normalizeCapex, normalizeStockBasedComp, computeFreeCashFlow } from "../aggregate";
+import { normalizeCapex, normalizeStockBasedComp, computeFreeCashFlow, fiscalYearForPeriodEnd } from "../aggregate";
 
 /**
  * QA fix (bug report: "5Y/10Y range still only shows ~3-4 years despite the
@@ -454,10 +454,40 @@ function annualSeries(
   );
 }
 
-/** Genuinely quarterly, as-filed 10-Q entries only, keyed "fiscalYear-Qn" (e.g. "2023-Q2"). String-sortable within and across years (see aggregate.ts). */
+/**
+ * Genuinely quarterly, as-filed 10-Q entries only, keyed "fiscalYear-Qn"
+ * (e.g. "2023-Q2"). String-sortable within and across years (see
+ * aggregate.ts).
+ *
+ * Root-cause fix (live report: CRM/Salesforce — fiscal year ends January
+ * 31 — showed artificial dips/spikes in quarterly revenue): `entry.fp`
+ * ("Q1"-"Q4") is safe to keep as-is — unlike `fy`, it does correctly
+ * identify WHICH quarter a comparative column describes (a same-quarter-
+ * prior-year comparison is still tagged with that quarter's own fp). But
+ * the YEAR component used to be `new Date(entry.end).getFullYear()` — the
+ * bare calendar year of the period's own end date. For CRM's FY2024 Q1
+ * (ending April 30, 2023) that produced "2023-Q1", while CRM's own FY2024
+ * annual period (ending January 31, 2024) is correctly labeled "2024" by
+ * annualSeries above — splitting ONE real fiscal year's four quarters
+ * across TWO different label-year prefixes (Q1-Q3 landing under "2023",
+ * Q4 under "2024"). That broke synthesizeIncomeQ4/synthesizeCashFlowQ4/
+ * synthesizeBalanceQ4 below, which look up "${annualLabel}-Q1/Q2/Q3" and
+ * silently found nothing for any such company, and scattered a single
+ * fiscal year's quarters across Select Range's year-bucketing.
+ *
+ * Fixed via fiscalYearForPeriodEnd (aggregate.ts) — the same shared
+ * fiscal-year-rollover formula yahoo.ts's makeFiscalQuarterLabelFn uses
+ * for Yahoo's own quarterly rows, so both sources land on the identical
+ * label for the identical real period (required for mergeYearsBySource's
+ * exact-string-key cross-source matching to work — see that function's
+ * doc comment in aggregate.ts). `fiscalYearEndMonth` (0-11) comes from
+ * inferSecFiscalYearEndMonth below, computed once per symbol from this
+ * company's own annual filings rather than assumed to be December.
+ */
 function quarterlySeries(
   facts: Record<string, XbrlConceptFacts> | undefined,
   tags: string[],
+  fiscalYearEndMonth: number,
   unitKey = "USD"
 ): Map<string, number> {
   return periodSeries(
@@ -467,12 +497,7 @@ function quarterlySeries(
       if (!entry.fp || !/^Q[1-4]$/.test(entry.fp) || !QUARTERLY_FORMS.has(entry.form)) return null;
       const days = durationDays(entry);
       if (days != null && (days < 70 || days > 100)) return null; // not a genuine ~1-quarter duration
-      // `entry.fp` ("Q1"-"Q4") is safe to keep as-is — unlike `fy`, it does
-      // correctly identify WHICH quarter a comparative column describes
-      // (a same-quarter-prior-year comparison is still tagged with that
-      // quarter's own fp). Only the YEAR component had the entry.fy bug —
-      // see this function pair's shared doc comment above.
-      return `${new Date(entry.end).getFullYear()}-${entry.fp}`;
+      return `${fiscalYearForPeriodEnd(new Date(entry.end), fiscalYearEndMonth)}-${entry.fp}`;
     },
     unitKey
   );
@@ -508,9 +533,11 @@ function annualSeriesDetailed(
   );
 }
 
+/** Detailed sibling of quarterlySeries above — same fiscal-year-aware period classification (see its doc comment), plus the winning entry's `filed` date. */
 function quarterlySeriesDetailed(
   facts: Record<string, XbrlConceptFacts> | undefined,
   tags: string[],
+  fiscalYearEndMonth: number,
   unitKey = "USD"
 ): Map<string, { value: number; filed: string }> {
   return periodSeriesDetailed(
@@ -520,7 +547,7 @@ function quarterlySeriesDetailed(
       if (!entry.fp || !/^Q[1-4]$/.test(entry.fp) || !QUARTERLY_FORMS.has(entry.form)) return null;
       const days = durationDays(entry);
       if (days != null && (days < 70 || days > 100)) return null;
-      return `${new Date(entry.end).getFullYear()}-${entry.fp}`;
+      return `${fiscalYearForPeriodEnd(new Date(entry.end), fiscalYearEndMonth)}-${entry.fp}`;
     },
     unitKey
   );
@@ -531,6 +558,43 @@ type SeriesFnDetailed = (
   tags: string[],
   unitKey?: string
 ) => Map<string, { value: number; filed: string }>;
+
+/**
+ * Company-specific fiscal year end month (0-11, Date.getMonth() convention
+ * — matches yahoo.ts's own inferFiscalYearEndMonth exactly), fed into
+ * quarterlySeries/quarterlySeriesDetailed above via fiscalYearForPeriodEnd
+ * so quarters get bucketed into the fiscal year they actually belong to
+ * instead of the calendar year their own end date happens to fall in (see
+ * quarterlySeries' doc comment for the CRM/Salesforce bug this fixes).
+ *
+ * Takes the MOST RECENT "FY" (10-K/20-F, fp="FY") entry's period end date
+ * found anywhere in this company's companyfacts payload — same "most
+ * recent annual row wins" convention yahoo.ts's inferFiscalYearEndMonth
+ * uses (see its doc comment), so a company that changed its fiscal
+ * year-end at some point in its history is read the same current
+ * convention by both sources, not an early outlier. Falls back to 11
+ * (December) — the default for the overwhelming majority of US filers,
+ * and a mathematical no-op for fiscalYearForPeriodEnd — if no FY entry is
+ * found at all (e.g. a filer whose facts payload happens to contain zero
+ * ANNUAL_FORMS entries under any tag, which would also mean annualSeries
+ * itself has nothing to return).
+ */
+function inferSecFiscalYearEndMonth(facts: Record<string, XbrlConceptFacts> | undefined): number {
+  if (!facts) return 11;
+  let mostRecentEnd: Date | null = null;
+  for (const concept of Object.values(facts)) {
+    const entries = concept.units?.USD;
+    if (!entries) continue;
+    for (const entry of entries) {
+      if (entry.fp !== "FY" || !ANNUAL_FORMS.has(entry.form)) continue;
+      const days = durationDays(entry);
+      if (days != null && (days < 300 || days > 400)) continue; // not a genuine ~1-year duration
+      const end = new Date(entry.end);
+      if (!mostRecentEnd || end > mostRecentEnd) mostRecentEnd = end;
+    }
+  }
+  return mostRecentEnd ? mostRecentEnd.getMonth() : 11;
+}
 
 // ---------------------------------------------------------------------------
 // Retroactive stock-split adjustment
@@ -1536,12 +1600,24 @@ export async function fetchSecFinancials(symbol: string): Promise<SecFinancials>
     // that lands mid-year still retroactively adjusts every prior quarter
     // and fiscal year's per-share figures consistently.
     const splits = detectStockSplits(facts, symbol);
+    // See quarterlySeries/inferSecFiscalYearEndMonth's doc comments above —
+    // computed once per symbol, then closed over so every quarterly-series
+    // call below (across income/balance/cash-flow, however many tag lists
+    // each one tries) uses the identical fiscal-year-end assumption without
+    // toSecIncomeRows/toSecBalanceRows/toSecCashFlowRows needing to know
+    // this parameter exists at all — they still just call `series(facts,
+    // tags)` exactly as before, matching the plain SeriesFn/SeriesFnDetailed
+    // signature annualSeries/annualSeriesDetailed also satisfy unchanged.
+    const fiscalYearEndMonth = inferSecFiscalYearEndMonth(facts);
+    const quarterlySeriesForCompany: SeriesFn = (f, tags, unitKey) => quarterlySeries(f, tags, fiscalYearEndMonth, unitKey);
+    const quarterlySeriesDetailedForCompany: SeriesFnDetailed = (f, tags, unitKey) =>
+      quarterlySeriesDetailed(f, tags, fiscalYearEndMonth, unitKey);
     const incomeAnnual = toSecIncomeRows(facts, annualSeries, annualSeriesDetailed, splits);
     const balanceAnnual = toSecBalanceRows(facts, annualSeries);
     const cashFlowAnnual = toSecCashFlowRows(facts, annualSeries, false);
-    const incomeQuarterlyRaw = toSecIncomeRows(facts, quarterlySeries, quarterlySeriesDetailed, splits);
-    const balanceQuarterlyRaw = toSecBalanceRows(facts, quarterlySeries);
-    const cashFlowQuarterlyRaw = toSecCashFlowRows(facts, quarterlySeries, true);
+    const incomeQuarterlyRaw = toSecIncomeRows(facts, quarterlySeriesForCompany, quarterlySeriesDetailedForCompany, splits);
+    const balanceQuarterlyRaw = toSecBalanceRows(facts, quarterlySeriesForCompany);
+    const cashFlowQuarterlyRaw = toSecCashFlowRows(facts, quarterlySeriesForCompany, true);
     // See synthesizeIncomeQ4/synthesizeCashFlowQ4/synthesizeBalanceQ4's doc
     // comments — fills each fiscal year's missing 4th quarter, which no
     // filer ever files as a standalone 10-Q, so it can never come from

@@ -110,6 +110,43 @@ export interface SourceLayer<T extends YearRow> {
  * never participates in a historical series next to unified-formula rows,
  * only stands in alone as a last resort. See the comment at that call site.
  */
+/**
+ * The fiscal year a period ending on `end` belongs to, given the company's
+ * fiscal year end MONTH (0-11, Date.getMonth() convention — 0 for a
+ * January fiscal year end, 11 for December/calendar-fiscal). A fiscal year
+ * is conventionally NAMED after the calendar year in which it ENDS, so a
+ * period's own end-date calendar year is only the right fiscal-year number
+ * when that period ends in or before the fiscal year-end month within that
+ * same calendar year; otherwise it belongs to the fiscal year that will
+ * conclude the FOLLOWING calendar year. Mathematically a no-op for the
+ * overwhelming majority of December-fiscal-year filers (every month is
+ * always <= 11, so this never rolls the year forward) — the effect is
+ * confined entirely to non-calendar-fiscal-year filers: NVDA (~January),
+ * MSFT (~June), AAPL (~September), CRM/Salesforce (~January), among others.
+ *
+ * The single shared implementation of this formula — yahoo.ts's
+ * makeFiscalQuarterLabelFn (Yahoo quarterly rows) and sec-edgar.ts's
+ * quarterlySeries/quarterlySeriesDetailed (SEC EDGAR quarterly rows) both
+ * call this rather than each carrying their own copy of the arithmetic, so
+ * the two sources can never independently drift on what fiscal year a
+ * given period-end date belongs to. That matters because mergeYearsBySource
+ * below dedups/merges quarterly rows across sources by exact fiscalYear-
+ * label STRING match — both sources computing the identical label for the
+ * identical real period is what makes that matching work at all, instead
+ * of silently producing duplicate near-identical rows under two adjacent,
+ * seemingly-distinct labels (see yahoo.ts's makeFiscalQuarterLabelFn doc
+ * comment for the exact NVDA/AAPL/MSFT bug this class of mismatch caused
+ * once already, on the quarter-NUMBER side; this fixes the equivalent bug
+ * on the quarter-YEAR side, root-caused via a CRM/Salesforce report —
+ * FYE January 31 — where SEC EDGAR's quarterly rows for one fiscal year
+ * were splitting across two different label-year prefixes, breaking
+ * synthesizeIncomeQ4/synthesizeCashFlowQ4/synthesizeBalanceQ4's
+ * `${annualLabel}-Q1/Q2/Q3` lookups for any such company).
+ */
+export function fiscalYearForPeriodEnd(end: Date, fiscalYearEndMonth: number): number {
+  return end.getMonth() > fiscalYearEndMonth ? end.getFullYear() + 1 : end.getFullYear();
+}
+
 export function normalizeCapex(raw: number): number {
   const abs = Math.abs(raw);
   return abs === 0 ? 0 : -abs; // avoid a stray "-0" reaching formatters/UI
