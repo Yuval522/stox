@@ -51,6 +51,12 @@ interface CashFlowTooltipProps {
  * rightmost bar) — flips to grow left of the cursor via shouldFlipTooltip()
  * once the hovered bar is near the end of the series; see that helper in
  * lib/format/chart.ts for the full root-cause writeup.
+ *
+ * The Stock-Based Comp row gets an explicit "(shown as a cost impact)"
+ * note in Absolute view — see negateSbcForDisplay's doc comment above —
+ * so a negative-looking dollar figure here is never mistaken for a claim
+ * that SBC is a literal cash outflow; it isn't, and nowhere else in this
+ * app's data model treats it as one.
  */
 function CashFlowTooltip({ active, payload, label, currency, view, data }: CashFlowTooltipProps) {
   if (!active || !payload || payload.length === 0) return null;
@@ -67,6 +73,7 @@ function CashFlowTooltip({ active, payload, label, currency, view, data }: CashF
             <span className="flex items-center gap-1.5 text-muted-foreground">
               <span className="h-2 w-2 rounded-full" style={{ backgroundColor: entry.color }} />
               {entry.name}
+              {entry.dataKey === "stockBasedCompensation" && view === "absolute" ? " (shown as a cost impact)" : ""}
             </span>
             <span className="font-mono font-medium text-foreground">
               {view === "yoy"
@@ -103,6 +110,35 @@ interface MultiMetricCardProps {
   showPctOfRevenue?: boolean;
   expanded: string | null;
   onToggle: (id: string) => void;
+}
+
+/**
+ * Display-only sign flip for Stock-Based Comp in this ONE chart's Absolute
+ * (dollar) view, so its bar renders downward next to CapEx instead of
+ * upward — a user-requested visual grouping, NOT an accounting claim.
+ *
+ * IMPORTANT: Stock-Based Compensation is not a real cash outflow — it's a
+ * non-cash expense added BACK to Operating Cash Flow precisely because no
+ * cash actually leaves the company for it, which is why
+ * CashFlowYear.stockBasedCompensation is documented and normalized as a
+ * positive figure everywhere else in this app (normalizeStockBasedComp in
+ * aggregate.ts; the FCF formula; SBC-as-%-of-revenue in insights.ts and
+ * this same panel's own "% of Revenue" view, which deliberately does NOT
+ * go through this function — see the call site below). Negating it in the
+ * shared CashFlowYear data model would silently corrupt every one of
+ * those. This function only ever runs on a throwaway COPY of the data
+ * built just for this Bar chart's render, immediately after
+ * useChartControls' `ranged` — the canonical `cashFlow`/`cashFlowQuarterly`
+ * arrays this component receives as props are never touched.
+ *
+ * CashFlowTooltip below shows an explicit "(shown as a cost impact)" note
+ * on this row specifically, so hovering never reads as "SBC was actually
+ * negative in the cash flow statement."
+ */
+function negateSbcForDisplay(data: CashFlowYear[]): CashFlowYear[] {
+  return data.map((row) =>
+    row.stockBasedCompensation === 0 ? row : { ...row, stockBasedCompensation: -row.stockBasedCompensation }
+  );
 }
 
 /**
@@ -149,7 +185,11 @@ function MultiMetricCard({
       ? controls.yoy(keys)
       : controls.view === "pctOfRevenue" && showPctOfRevenue
         ? toPctOfRevenue(controls.ranged, keys, "totalRevenue")
-        : controls.ranged;
+        // Display-only sign flip for Stock-Based Comp in the Absolute
+        // (dollar) view — see negateSbcForDisplay's doc comment just below
+        // this component for why this happens HERE, at render time, rather
+        // than in the underlying CashFlowYear data.
+        : negateSbcForDisplay(controls.ranged);
   const axisFormatter = controls.view === "yoy" || controls.view === "pctOfRevenue" ? (v: number) => `${v}%` : compactAxis;
 
   return (
