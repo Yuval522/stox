@@ -19,10 +19,9 @@ import type { IncomeStatementYear, PricePoint } from "./types";
  * Methodology (fully disclosed, not proprietary):
  *  1. For each of the trailing up-to-10 real fiscal years, find the
  *     closing price nearest that year's approximate fiscal year-end
- *     (Dec 31 of the label year — the same approximation
- *     providers/sec-edgar.ts's periodEndDateFromLabel already uses
- *     elsewhere in this codebase, since IncomeStatementYear only carries a
- *     bare year label, not an exact period-end date) and derive that
+ *     (Dec 31 of the label year — a simple approximation, since
+ *     IncomeStatementYear only carries a bare year label, not an exact
+ *     period-end date) and derive that
  *     year's implied P/E (price / EPS) and P/S (price / revenue-per-share)
  *     — only when EPS/revenue were genuinely positive that year.
  *  2. Take the MEDIAN of each multiple across however many years produced
@@ -239,7 +238,7 @@ export function computeFairValueBand({
 
   // 5-to-10-year window, per spec — whatever's available up to the last 10
   // real fiscal years (older data is dropped, not required; a ticker with
-  // only 5-6 years of SEC EDGAR/Yahoo coverage still gets an estimate).
+  // only Yahoo/FMP's ~4-5 years of coverage still gets an estimate).
   const window = historical.slice(-10);
 
   const peSamples: number[] = [];

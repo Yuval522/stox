@@ -79,7 +79,7 @@ export interface MarketQuote {
   /**
    * Epoch ms of the CURRENT company's first trade date under this symbol
    * (Yahoo's `firstTradeDateMilliseconds`), null when Yahoo doesn't report
-   * one. Ticker-recycling / ghost-data fix: Yahoo (and SEC EDGAR) key
+   * one. Ticker-recycling / ghost-data fix: Yahoo keys
    * historical data by ticker SYMBOL, not by company identity, so a symbol
    * recycled from a delisted/defunct company can otherwise surface that OLD
    * company's financial statements and price bars under a brand-new IPO.
@@ -160,15 +160,17 @@ export interface TickerMetrics {
 /**
  * Multi-source aggregation (see lib/finance/aggregate.ts): each historical
  * financial-statement year is fetched from whichever provider has it,
- * prioritized deepest/most-authoritative first. "sec-edgar" is the primary
- * deep-history source (audited XBRL data straight from 10-K/20-F filings,
- * typically 10+ years for any SEC-registered filer); "yahoo" covers recent
- * years and any ticker SEC doesn't register (foreign-only listings);
- * "fmp" is a third-tier fallback for whatever gap remains. Optional and
- * omitted on mock/demo data (see mock-data.ts) — a missing `dataSource`
- * should be read as "mock" whenever `FundamentalsBundle.source === "mock"`.
+ * prioritized deepest/most-authoritative first. "yahoo" (lib/finance/yahoo.ts)
+ * is the primary source; "fmp" (opt-in via FMP_API_KEY) is a secondary
+ * fallback for whatever isolated gap remains. Both are capped at roughly
+ * Yahoo's own free-tier depth (~4 annual periods / ~5 quarters) — there is
+ * no source in this app deep enough to back a genuine 10-year+ history (SEC
+ * EDGAR previously filled that role; it has been removed — see CLAUDE.md's
+ * Data layer section). Optional and omitted on mock/demo data (see
+ * mock-data.ts) — a missing `dataSource` should be read as "mock" whenever
+ * `FundamentalsBundle.source === "mock"`.
  */
-export type FinancialDataSource = "sec-edgar" | "yahoo" | "fmp";
+export type FinancialDataSource = "yahoo" | "fmp";
 
 /**
  * Set by mergeYearsBySource (aggregate.ts) when 2+ independently-fetched
@@ -233,7 +235,7 @@ export interface CashFlowYear {
    * `incomeQuarterly` arrays in getFundamentals() (see
    * backfillCashFlowRevenue in aggregate.ts), NOT sourced per-provider like
    * `netIncome` above — Yahoo's cash-flow fundamentalsTimeSeries module has
-   * no revenue field at all, and SEC EDGAR/FMP's cash-flow endpoints don't
+   * no revenue field at all, and FMP's cash-flow endpoint doesn't
    * consistently carry one either, but every source's income statement
    * always does. A period with no income-side match for the same
    * fiscalYear label (or any construction site that doesn't go through the
@@ -346,10 +348,10 @@ export interface FundamentalsBundle {
   cashFlow: CashFlowYear[];
   /**
    * Quarterly counterparts, `fiscalYear` holds a "YYYY-Qn" label (e.g.
-   * "2025-Q2") instead of a bare year — see quarterLabel()/quarterlySeries()
-   * in yahoo.ts / providers/sec-edgar.ts. Powers the Chart Type: Quarterly
+   * "2025-Q2") instead of a bare year — see makeFiscalQuarterLabelFn()
+   * in yahoo.ts. Powers the Chart Type: Quarterly
    * toggle (ChartControls.tsx); may be empty (e.g. mock/demo data, or a
-   * foreign private issuer with no 10-Q filings and thin Yahoo/FMP
+   * foreign private issuer with thin Yahoo/FMP
    * quarterly coverage) — panels should treat an empty array as "Quarterly
    * unavailable for this symbol" rather than rendering an empty chart.
    */

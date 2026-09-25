@@ -8,7 +8,7 @@
  * Yahoo endpoint fails, rate-limits, or simply doesn't cover a given
  * symbol, the "TTM" column silently disappeared from every Income/Cash
  * Flow chart, even when this app's own multi-source quarterly pipeline
- * (SEC EDGAR 10-Qs + Yahoo + FMP, merged in aggregate.ts) has all four of
+ * (Yahoo + FMP, merged in aggregate.ts) has all four of
  * the most recent quarters sitting right there in `incomeQuarterly`/
  * `cashFlowQuarterly`.
  *
@@ -24,7 +24,7 @@
  */
 
 interface QuarterRow {
-  /** "YYYY-Qn" — see makeFiscalQuarterLabelFn() in yahoo.ts / quarterlySeries() in providers/sec-edgar.ts. Anything not in that exact shape (annual "YYYY" rows, "TTM"/"MRQ" appendix rows) is ignored by quarterIndex() below. */
+  /** "YYYY-Qn" — see makeFiscalQuarterLabelFn() in yahoo.ts. Anything not in that exact shape (annual "YYYY" rows, "TTM"/"MRQ" appendix rows) is ignored by quarterIndex() below. */
   fiscalYear: string;
 }
 

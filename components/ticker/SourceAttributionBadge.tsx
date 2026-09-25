@@ -9,8 +9,8 @@ interface SourceAttributionBadgeProps<T extends YearRow> {
 /**
  * Small transparency caption for the multi-source aggregation pipeline
  * (see lib/finance/aggregate.ts): shows exactly which provider each fiscal
- * year's figures came from, e.g. "2016-2023: SEC EDGAR · 2024-2026: Yahoo
- * Finance". Renders nothing for mock/demo data (rows have no `dataSource`
+ * year's figures came from, e.g. "2020-2023: Yahoo Finance · 2024-2026:
+ * Financial Modeling Prep". Renders nothing for mock/demo data (rows have no `dataSource`
  * tag — see FinancialDataSource's doc comment in lib/finance/types.ts) or
  * once merged data happens to come entirely from a single source with
  * nothing else worth calling out... actually always renders when there's

@@ -33,7 +33,7 @@ import {
   type FmpCashFlowStatement,
   type FmpIncomeStatement,
 } from "./providers/fmp";
-import { fetchSecFinancials, applyKnownSplitAdjustmentToNonSecRows } from "./providers/sec-edgar";
+import { applyKnownSplitAdjustment, splitsForSymbol } from "./stockSplits";
 import { BIG_SEVEN_SYMBOLS, MARKET_SUMMARY_SYMBOLS, TASE_SEED_SYMBOLS, US_FALLBACK_SYMBOLS } from "./symbols";
 import {
   MarketDataError,
@@ -165,8 +165,8 @@ export async function getQuotes(symbols: string[]): Promise<MarketQuote[]> {
 /**
  * Lightweight daily-bars fetch for one symbol — deliberately a standalone,
  * single-purpose call rather than reusing getFundamentals()'s much heavier
- * multi-module bundle (quoteSummary, fundamentalsTimeSeries x6, SEC EDGAR,
- * FMP, ...), since the only current caller (lib/finance/indicators.ts, via
+ * multi-module bundle (quoteSummary, fundamentalsTimeSeries x6, FMP, ...),
+ * since the only current caller (lib/finance/indicators.ts, via
  * the Strategy Builder's technical-indicator filters — RSI/SMA) needs
  * nothing but a plain close-price series and may need to call this for
  * many symbols in one screener run. Cached separately from quoteCache at a
@@ -182,7 +182,7 @@ export async function getPriceHistory(symbol: string, days = 120): Promise<Price
     period1.setDate(period1.getDate() - days);
     try {
       // yahoo-finance2's chart() has no built-in request-timeout option
-      // (unlike this app's own fetch calls, e.g. sec-edgar.ts's
+      // (unlike this app's own fetch calls, e.g. providers/fmp.ts's
       // AbortSignal.timeout usage) — manually racing it against a timer is
       // what stops one hung symbol from stalling an entire Strategy
       // Builder run, which can call this for dozens of symbols in
@@ -575,10 +575,7 @@ const annualLabel: PeriodLabelFn = (date) => String(date.getFullYear());
  * "2025-Q4" — carrying byte-for-byte identical dollar figures, while GOOGL
  * and TSLA's quarterly data was clean). Root cause: this file used to
  * compute a pure CALENDAR quarter from a row's raw date
- * (`Math.floor(date.getMonth() / 3) + 1`), while SEC EDGAR's
- * quarterlySeries (providers/sec-edgar.ts) labels the SAME real periods by
- * each company's own reported FISCAL quarter (`entry.fp`, straight from
- * their XBRL filing). For a calendar-fiscal-year filer (GOOGL, TSLA — FY
+ * (`Math.floor(date.getMonth() / 3) + 1`). For a calendar-fiscal-year filer (GOOGL, TSLA — FY
  * ends December), calendar quarter and fiscal quarter are the same number,
  * so the old code coincidentally produced correct-looking labels. For any
  * filer whose fiscal year does NOT end in December — NVDA (~January),
@@ -601,10 +598,8 @@ const annualLabel: PeriodLabelFn = (date) => String(date.getFullYear());
  * inferFiscalYearEndMonth below) — the same date already used, unmodified,
  * for annualLabel. A December fiscal year-end reduces this exactly to the
  * old calendar-quarter formula, so calendar-fiscal filers are unaffected;
- * every other filer now gets fiscal-aware quarter numbers that agree with
- * SEC EDGAR's `entry.fp` labels for the same real periods, so
- * mergeYearsBySource's exact-string-key dedup can actually recognize them
- * as the same period instead of silently double-counting it.
+ * every other filer now gets fiscal-aware quarter numbers derived from its
+ * own reporting calendar instead of the calendar-quarter miscomputation.
  */
 function inferFiscalYearEndMonth(...annualRowSets: { date: unknown }[][]): number {
   for (const rows of annualRowSets) {
@@ -641,10 +636,9 @@ function makeFiscalQuarterLabelFn(fiscalYearEndMonth: number): PeriodLabelFn {
     // nearest quarter (tolerates a quarter-end date landing a few weeks
     // into the adjacent month, e.g. a 52/53-week fiscal calendar).
     const quarter = Math.ceil(monthsSinceFyEnd / 3) || 4;
-    // See fiscalYearForPeriodEnd's doc comment (aggregate.ts) — extracted
-    // to a shared primitive so sec-edgar.ts's quarterlySeries can compute
-    // the identical fiscal-year rollover for SEC EDGAR's own quarterly
-    // rows, rather than each source carrying its own copy of this formula.
+    // See fiscalYearForPeriodEnd's doc comment (aggregate.ts) — a shared
+    // primitive so every quarterly-labeling call site uses the identical
+    // fiscal-year rollover formula rather than each carrying its own copy.
     const fiscalYear = fiscalYearForPeriodEnd(date, fiscalYearEndMonth);
     return `${fiscalYear}-Q${quarter}`;
   };
@@ -762,7 +756,7 @@ function toTrailingIncomeRow(
  * genuine drop to a smaller-but-real number must never be auto-"fixed").
  * The right fix is at the source: never trust the single aggregate field
  * when the granular components are available. Computes Total Debt the
- * same way toSecBalanceRows() (sec-edgar.ts) always has — short-term debt
+ * same way fmpBalanceToYears() below does — short-term debt
  * + current portion of long-term debt + long-term debt — preferring each
  * side's "AndCapitalLeaseObligation" rollup (includes lease obligations)
  * over the bare debt-only field when Yahoo reports both. Yahoo's own
@@ -845,8 +839,8 @@ function toBalanceRows(
  * Yahoo's raw `capitalExpenditure` sign as-is on the ASSUMPTION it always
  * comes back negative, and trusted Yahoo's own `freeCashFlow` field
  * verbatim — but Yahoo's own FCF figure is computed by Yahoo's own
- * (undocumented, and not necessarily identical to SEC EDGAR's or FMP's)
- * definition. In a whole-row-per-fiscal-year multi-source merge
+ * (undocumented, and not necessarily identical to FMP's) definition. In a
+ * whole-row-per-fiscal-year multi-source merge
  * (aggregate.ts), trusting each provider's own FCF field means the exact
  * SAME company's FCF trend can show a discontinuity or even a sign flip
  * purely because the winning source for one year differs from the
@@ -921,7 +915,7 @@ function toTrailingCashFlowRow(rows: FundamentalsTimeSeriesCashFlowResult[]): Ca
  * (FMP rows can now also fill entire fiscal years Yahoo doesn't have, not
  * just individual fields within years it does).
  */
-/** "2023" for annual FMP rows, "2023-Q2" for quarterly ones (FMP's `period` field is present only on quarterly responses) — matches the same convention Yahoo/SEC EDGAR quarterly rows use, so all three sources merge cleanly. */
+/** "2023" for annual FMP rows, "2023-Q2" for quarterly ones (FMP's `period` field is present only on quarterly responses) — matches the same convention Yahoo's own quarterly rows use, so both sources merge cleanly. */
 function fmpPeriodKey(r: { calendarYear: string; period?: string }): string {
   return r.period ? `${r.calendarYear}-${r.period}` : r.calendarYear;
 }
@@ -949,9 +943,8 @@ function fmpBalanceToYears(rows: FmpBalanceSheetStatement[] | null): BalanceShee
   return rows
     .filter((r) => r.calendarYear)
     .map((r) => {
-      // Same global MRQ/Total Debt fix as componentSummedTotalDebt (yahoo.ts)
-      // and toSecBalanceRows (sec-edgar.ts) — sum short-term + long-term
-      // debt components when FMP's response includes them, only falling
+      // Same global MRQ/Total Debt fix as componentSummedTotalDebt above —
+      // sum short-term + long-term debt components when FMP's response includes them, only falling
       // back to FMP's own pre-aggregated totalDebt when neither component
       // is present, so this third-tier provider can't reintroduce the same
       // narrow-subcomponent bug the other two sources are now guarded
@@ -1223,7 +1216,7 @@ function toPricePoints(chart: ChartResultArray): PricePoint[] {
  *
  * Honest limitation: this guarantees Stox ASKS its upstream providers
  * again as soon as the calendar date arrives — it can't guarantee Yahoo/
- * SEC EDGAR/FMP have already indexed the brand-new quarter at that exact
+ * FMP have already indexed the brand-new quarter at that exact
  * moment (that indexing lag lives entirely on their end, not something a
  * client-side cache policy can close). What it fixes is Stox's *own*
  * up-to-15-cache-cycle (~5 minute in current config) delay on top of
@@ -1294,17 +1287,22 @@ export async function getFundamentals(symbolRaw: string): Promise<FundamentalsBu
       // genuinely differ from "5 Years" whenever the ticker's real history
       // goes back that far.
       //
-      // IMPORTANT caveat (root-caused in a later pass, see the USER_AGENT
-      // doc comment in providers/sec-edgar.ts): this period1 window only
-      // matters for how far back *Yahoo* is willing to look — it does NOT
-      // mean Yahoo will actually return that much. Yahoo's
-      // fundamentalsTimeSeries endpoint has a hard backend cap of roughly 4
-      // annual periods / 5 quarters regardless of period1 (confirmed
-      // against yfinance's own scraper source and multiple independent
-      // reports), so real 5/10-year depth depends entirely on SEC EDGAR
-      // (providers/sec-edgar.ts) actually succeeding — which itself
-      // requires SEC_EDGAR_CONTACT to be set (see .env.local.example) or
-      // SEC returns 403 and this whole layer silently contributes nothing.
+      // IMPORTANT caveat: this period1 window only matters for how far back
+      // *Yahoo* is willing to look — it does NOT mean Yahoo will actually
+      // return that much. Yahoo's fundamentalsTimeSeries endpoint has a hard
+      // backend cap of roughly 4 annual periods / 5 quarters regardless of
+      // period1 (confirmed against yfinance's own scraper source and
+      // multiple independent reports — not something any lookback-window
+      // tuning on our side can widen). FMP (providers/fmp.ts, opt-in via
+      // FMP_API_KEY) is the only secondary backfill source; its free tier
+      // caps history at ~5 years too, so it rarely adds real depth beyond
+      // what Yahoo already covers. There is no source in this app that can
+      // back a genuine "10 Years"/"All Available" range selection — a
+      // screening query for that range will only ever return however much
+      // Yahoo+FMP actually have (usually ~4 years). getAvailableRanges()
+      // (chart-transform.ts) computes its range options from actual data
+      // depth, so this degrades gracefully rather than crashing or hiding
+      // the range options.
       const balancePeriod1 = new Date();
       balancePeriod1.setFullYear(balancePeriod1.getFullYear() - 11);
 
@@ -1326,7 +1324,6 @@ export async function getFundamentals(symbolRaw: string): Promise<FundamentalsBu
         cashFlowRowsQuarterly,
         trailingIncomeRows,
         trailingCashFlowRows,
-        secFinancials,
         fmpIncomeRows,
         fmpBalanceRows,
         fmpCashFlowRows,
@@ -1463,27 +1460,7 @@ export async function getFundamentals(symbolRaw: string): Promise<FundamentalsBu
             module: "cash-flow",
           })
           .catch(() => [] as FundamentalsTimeSeriesCashFlowResult[]),
-        // Multi-source aggregation, primary deep-history layer (see
-        // aggregate.ts / providers/sec-edgar.ts doc comments) — audited
-        // XBRL data straight from 10-K/20-F filings, the only source that
-        // can genuinely back a "10 Years"/"All Available" range selection
-        // for an established filer. fetchSecFinancials() never throws (its
-        // own try/catch resolves a well-formed { status: "unavailable" }
-        // result), caught here too only for defense-in-depth consistency
-        // with the other independently-caught fetches above.
-        fetchSecFinancials(symbol).catch(
-          () => ({
-            status: "unavailable" as const,
-            income: [],
-            balance: [],
-            cashFlow: [],
-            incomeQuarterly: [],
-            balanceQuarterly: [],
-            cashFlowQuarterly: [],
-            splits: [],
-          })
-        ),
-        // Multi-source aggregation, third-tier layer — no-op (resolves
+        // Multi-source aggregation, secondary/backfill layer — no-op (resolves
         // null almost instantly) unless FMP_API_KEY is configured; see
         // providers/fmp.ts.
         fetchFmpIncomeStatements(symbol).catch(() => null),
@@ -1527,41 +1504,34 @@ export async function getFundamentals(symbolRaw: string): Promise<FundamentalsBu
       const yahooCashFlow = toCashFlowRows(cashFlowRows as FundamentalsTimeSeriesCashFlowResult[], symbol, annualLabel, "toCashFlowRows");
 
       // Multi-source aggregation (see aggregate.ts): for each fiscal year,
-      // SEC EDGAR's audited deep history wins when it has that year, Yahoo
-      // fills recent years and any ticker SEC doesn't register, FMP fills
-      // whatever isolated gap remains. Every row keeps a `dataSource` tag
-      // for the UI attribution badge (see Income/Balance/CashFlow panels).
-      // anchorField opts each statement into cross-source triangulation —
-      // see mergeYearsBySource's doc comment in aggregate.ts. Each anchor
-      // is that statement's single most load-bearing, universally-reported
-      // figure, chosen specifically because every provider defines it the
-      // same way (unlike, say, "operating income", which varies by
-      // one-time-charge treatment across sources).
+      // Yahoo's own history wins when it has that year, FMP (opt-in via
+      // FMP_API_KEY) fills whatever isolated gap remains. Every row keeps a
+      // `dataSource` tag for the UI attribution badge (see Income/Balance/
+      // CashFlow panels). anchorField opts each statement into cross-source
+      // triangulation — see mergeYearsBySource's doc comment in
+      // aggregate.ts. Each anchor is that statement's single most
+      // load-bearing, universally-reported figure, chosen specifically
+      // because every provider defines it the same way (unlike, say,
+      // "operating income", which varies by one-time-charge treatment
+      // across sources).
       //
       // backfillZeroFields (live bug reports: AT&T's Gross Profit was $0
       // for every annual year, and separately its Total Liabilities was $0
       // for every period, despite Total Assets/Revenue populating fine —
-      // root-caused to SEC EDGAR's per-filer XBRL tag coverage gaps, not a
+      // root-caused to per-provider tag/field coverage gaps, not a
       // company that genuinely has $0 liabilities/gross profit — see
       // mergeYearsBySource's doc comment for the exact mechanism) patches
       // just that one field from a lower-priority source's real value when
       // the winning row's own value is a suspicious, structurally-implausible
       // exact 0, without touching any other field on the row.
-      // QA fix (live audit: NVDA's earliest 2 fiscal years — the only ones
-      // outside SEC EDGAR's XBRL coverage, so Yahoo/FMP win them instead —
-      // showed diluted shares wildly out of line with every later,
-      // SEC-sourced, correctly split-adjusted year). See
-      // applyKnownSplitAdjustment's doc comment in sec-edgar.ts: SEC-sourced
-      // rows already get the precise, per-fact filed-date adjustment inside
-      // toSecIncomeRows, but a non-SEC row that wins the merge for a year
-      // SEC has no data for was never adjusted at all anywhere in this
-      // codebase. Applied AFTER the merge, filtered to non-sec-edgar rows
-      // only, so SEC rows are never touched twice.
+      // Retroactive stock-split adjustment (see stockSplits.ts) is applied
+      // uniformly to every row after the merge, regardless of which source
+      // won a given year — there is only one adjustment mechanism now that
+      // this app has a single data source's rows to adjust.
       const incomeMerged = mergeYearsBySource(
         "income",
         symbol,
         [
-          { source: "sec-edgar", years: secFinancials.income },
           { source: "yahoo", years: yahooIncome },
           { source: "fmp", years: fmpIncomeToYears(fmpIncomeRows) },
         ],
@@ -1569,11 +1539,11 @@ export async function getFundamentals(symbolRaw: string): Promise<FundamentalsBu
       );
       // Ticker-recycling / ghost-data fix (see filterRowsBeforeListing's doc
       // comment in aggregate.ts) — applied AFTER the multi-source merge so
-      // it catches ghost data regardless of which of the three providers
+      // it catches ghost data regardless of which of the two providers
       // contributed a given period, and BEFORE the TTM/MRQ appendix below
       // so those always-current synthetic rows are never at risk of it.
       const income = filterRowsBeforeListing(
-        applyKnownSplitAdjustmentToNonSecRows(incomeMerged, secFinancials.splits),
+        applyKnownSplitAdjustment(incomeMerged, splitsForSymbol(symbol)),
         listingDateMs
       );
       // Cheap safety net for both this fix and the filed-date fix upstream —
@@ -1584,7 +1554,6 @@ export async function getFundamentals(symbolRaw: string): Promise<FundamentalsBu
           "balance",
           symbol,
           [
-            { source: "sec-edgar", years: secFinancials.balance },
             { source: "yahoo", years: yahooBalance },
             { source: "fmp", years: fmpBalanceToYears(fmpBalanceRows) },
           ],
@@ -1597,7 +1566,6 @@ export async function getFundamentals(symbolRaw: string): Promise<FundamentalsBu
           "cashFlow",
           symbol,
           [
-            { source: "sec-edgar", years: secFinancials.cashFlow },
             { source: "yahoo", years: yahooCashFlow },
             { source: "fmp", years: fmpCashFlowToYears(fmpCashFlowRows) },
           ],
@@ -1607,11 +1575,11 @@ export async function getFundamentals(symbolRaw: string): Promise<FundamentalsBu
       );
 
       // Quarterly counterparts — Chart Type: Quarterly view. Same merge
-      // priority (SEC EDGAR 10-Qs > Yahoo > FMP), keyed "fiscalYear-Qn"
-      // instead of a bare year (see quarterLabel()/quarterlySeries()).
-      // Foreign private issuers (20-F filers) generally don't file 10-Qs,
-      // so `secFinancials.*Quarterly` is often empty for them — Yahoo/FMP
-      // still cover that case. Computed BEFORE the trailing/TTM appendix
+      // priority (Yahoo > FMP), keyed "fiscalYear-Qn"
+      // instead of a bare year (see quarterLabel()).
+      // Foreign private issuers generally have thin Yahoo/FMP quarterly
+      // coverage — this simply results in a shorter quarterly series for
+      // them. Computed BEFORE the trailing/TTM appendix
       // below so the merged, multi-source quarterly arrays are available as
       // a universal TTM fallback (see computeTrailingTwelveMonths in ttm.ts).
       const yahooIncomeQuarterly = toIncomeRows(
@@ -1637,18 +1605,16 @@ export async function getFundamentals(symbolRaw: string): Promise<FundamentalsBu
         "incomeQuarterly",
         symbol,
         [
-          { source: "sec-edgar", years: secFinancials.incomeQuarterly },
           { source: "yahoo", years: yahooIncomeQuarterly },
           { source: "fmp", years: fmpIncomeToYears(fmpIncomeRowsQuarterly) },
         ],
         { anchorField: "totalRevenue", backfillZeroFields: ["grossProfit", "operatingIncome"] }
       );
-      // Same non-SEC split-adjustment gap as the annual series above, just
-      // for the quarterly one — see applyKnownSplitAdjustmentToNonSecRows'
-      // doc comment in sec-edgar.ts. Ghost-data cutoff applied here too —
-      // same rationale as the annual arrays above.
+      // Same split-adjustment as the annual series above (see
+      // stockSplits.ts), applied uniformly across sources. Ghost-data
+      // cutoff applied here too — same rationale as the annual arrays above.
       const incomeQuarterly = filterRowsBeforeListing(
-        applyKnownSplitAdjustmentToNonSecRows(incomeQuarterlyMerged, secFinancials.splits),
+        applyKnownSplitAdjustment(incomeQuarterlyMerged, splitsForSymbol(symbol)),
         listingDateMs
       );
       const balanceQuarterly = filterRowsBeforeListing(
@@ -1656,7 +1622,6 @@ export async function getFundamentals(symbolRaw: string): Promise<FundamentalsBu
           "balanceQuarterly",
           symbol,
           [
-            { source: "sec-edgar", years: secFinancials.balanceQuarterly },
             { source: "yahoo", years: yahooBalanceQuarterly },
             { source: "fmp", years: fmpBalanceToYears(fmpBalanceRowsQuarterly) },
           ],
@@ -1669,7 +1634,6 @@ export async function getFundamentals(symbolRaw: string): Promise<FundamentalsBu
           "cashFlowQuarterly",
           symbol,
           [
-            { source: "sec-edgar", years: secFinancials.cashFlowQuarterly },
             { source: "yahoo", years: yahooCashFlowQuarterly },
             { source: "fmp", years: fmpCashFlowToYears(fmpCashFlowRowsQuarterly) },
           ],
@@ -1695,10 +1659,7 @@ export async function getFundamentals(symbolRaw: string): Promise<FundamentalsBu
       // trailing endpoint fails, rate-limits, or doesn't cover this symbol.
       // This makes "TTM" genuinely universal/source-agnostic instead of a
       // silent Yahoo-only dependency: any symbol with 4 consecutive merged
-      // quarters (from SEC EDGAR 10-Qs, Yahoo, or FMP, in any combination)
-      // now gets a TTM bar. SEC EDGAR itself has no TTM concept (audited
-      // annual/quarterly filings only) — it contributes via the quarterly
-      // merge above, not directly.
+      // quarters (from Yahoo or FMP, in any combination) now gets a TTM bar.
       const incomeTrailing =
         toTrailingIncomeRow(trailingIncomeRows as FundamentalsTimeSeriesFinancialsResult[], summary) ??
         computeTrailingTwelveMonths(incomeQuarterly, {

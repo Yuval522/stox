@@ -71,7 +71,7 @@ export async function POST(request: Request) {
       // No RESEND_API_KEY configured — documented, non-broken fallback
       // (see .env.local.example), matching this project's established
       // "optional integration, documented fallback" pattern already used
-      // for FMP_API_KEY/SEC_EDGAR_CONTACT. Visible via `vercel logs` in
+      // for FMP_API_KEY. Visible via `vercel logs` in
       // production or the terminal in local dev.
       console.log(
         `[Stox] Password reset requested for user "${username}" (${normalized}). ` +

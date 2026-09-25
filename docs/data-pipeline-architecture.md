@@ -2,21 +2,21 @@
 
 **Scope:** institutional-grade redesign of `lib/finance/` — provider benchmark, root cause of the pre-2009 historical-depth wall, TTM/MRQ calculation engine, and a concrete implementation blueprint.
 
-**Status:** provider research and root-cause analysis complete; the TTM engine (item 3) is implemented and shipped (`lib/finance/ttm.ts`, wired into `getFundamentals()` in `yahoo.ts`). Adopting a new paid provider for pre-2009 depth (item 2's fix) is a budget/API-key decision only you can make — this doc gives you the exact integration shape to drop in when you're ready.
+**Status (updated):** the SEC EDGAR integration described throughout this document (`providers/sec-edgar.ts`) has since been **removed entirely** per explicit request — the app no longer makes any requests to SEC EDGAR, and the pre-2009 depth wall this document analyzes is therefore no longer a "wall" to work around with a paid provider like EODHD; it's simply this app's permanent ceiling on fundamentals depth (Yahoo + FMP only, ~4-5 years). §§1-2 and §4 below are kept as historical record of the prior architecture and are **no longer accurate as a description of the current codebase** — see CLAUDE.md's Data layer section for the current, accurate picture. The TTM engine (§3) is unaffected by the SEC EDGAR removal and remains shipped as described.
 
 ---
 
-## 1. Current pipeline, as-built
+## 1. Current pipeline, as-built (historical — SEC EDGAR since removed, see Status above)
 
-`getFundamentals()` in `lib/finance/yahoo.ts` fans out to three sources in parallel per request:
+`getFundamentals()` in `lib/finance/yahoo.ts` used to fan out to three sources in parallel per request:
 
 | Source | File | Role | Depth |
 |---|---|---|---|
-| SEC EDGAR (`companyfacts` XBRL API) | `providers/sec-edgar.ts` | Primary — audited, as-filed statements | 10–20 fiscal years for established large filers, but **never earlier than ~2009** (see §2) |
-| Yahoo Finance (`yahoo-finance2`) | `yahoo.ts` | Fills recent years + any ticker SEC doesn't register (foreign-only listings, TASE) | ~4–5 fiscal years annual, more for quarterly |
-| Financial Modeling Prep | `providers/fmp.ts` | Third-tier gap-filler, entirely opt-in via `FMP_API_KEY` | Up to 30 years on paid tiers, capped at 5 years annual on the free tier |
+| ~~SEC EDGAR (`companyfacts` XBRL API)~~ *(removed)* | ~~`providers/sec-edgar.ts`~~ | Was primary — audited, as-filed statements | Was 10–20 fiscal years for established large filers, but **never earlier than ~2009** (see §2) |
+| Yahoo Finance (`yahoo-finance2`) | `yahoo.ts` | Now the primary source for every ticker | ~4–5 fiscal years annual, more for quarterly |
+| Financial Modeling Prep | `providers/fmp.ts` | Now the only secondary gap-filler, entirely opt-in via `FMP_API_KEY` | Up to 30 years on paid tiers, capped at 5 years annual on the free tier |
 
-`aggregate.ts`'s `mergeYearsBySource()` combines them per fiscal year with fixed priority (SEC EDGAR > Yahoo > FMP), merging **whole rows**, never individual fields across sources within the same period — deliberate, to avoid blending incompatible line-item definitions from different filers' XBRL taxonomies. This is also why a single missing/zero field from the top-priority source can win an entire period over a better-populated lower-priority source; the fabricated-$0-revenue bug fixed earlier in this project was exactly that failure mode, closed by widening SEC EDGAR's own revenue-tag coverage rather than by weakening the merge priority.
+`aggregate.ts`'s `mergeYearsBySource()` combines them per fiscal year with fixed priority (now just Yahoo > FMP), merging **whole rows**, never individual fields across sources within the same period — deliberate, to avoid blending incompatible line-item definitions from different providers. This is also why a single missing/zero field from the top-priority source can win an entire period over a better-populated lower-priority source; the fabricated-$0-revenue bug fixed earlier in this project was exactly that failure mode.
 
 ---
 
@@ -72,7 +72,7 @@ export function computeTrailingTwelveMonths<T extends { fiscalYear: string }>(
 
 ### Wiring (`yahoo.ts`, inside `getFundamentals()`)
 
-The quarterly merge block (`incomeQuarterly`/`balanceQuarterly`/`cashFlowQuarterly`, each already merged SEC EDGAR > Yahoo > FMP by `mergeYearsBySource`) now runs **before** the trailing/TTM-append step, so the merged quarterly data is available as a fallback:
+The quarterly merge block (`incomeQuarterly`/`balanceQuarterly`/`cashFlowQuarterly`, each already merged Yahoo > FMP by `mergeYearsBySource` — SEC EDGAR has since been removed from this priority chain, see Status above) now runs **before** the trailing/TTM-append step, so the merged quarterly data is available as a fallback:
 
 ```ts
 const incomeTrailing =
@@ -101,9 +101,11 @@ This also directly fixes the "clean mapping... without label shifts or duplicate
 
 ---
 
-## 4. Implementation blueprint for the remaining item (pre-2009 depth)
+## 4. Implementation blueprint for the remaining item (pre-2009 depth) — historical, not planned
 
-This is scoped separately from the TTM work above because it requires a paid API key/budget decision, not just code.
+This section is kept only as historical record. With SEC EDGAR removed entirely (see Status above), the "pre-2009 depth wall" framing no longer applies the way it did when this was written — the app's fundamentals depth is now simply capped by Yahoo/FMP's own free-tier limits (~4-5 years), full stop, and there is no SEC-EDGAR-based deep history to extend further back. Adding EODHD (or any other provider) remains a hypothetical future option, not a scoped or planned follow-up to this removal.
+
+This was scoped separately from the TTM work above because it requires a paid API key/budget decision, not just code.
 
 1. Add `providers/eodhd.ts` mirroring the existing `providers/fmp.ts` shape exactly: an `EODHD_API_KEY` env var, `getEodhdApiKey()` returning `null` when unset (so it's a true no-op, same opt-in pattern FMP already uses), and `fetchEodhdIncomeStatements/BalanceSheets/CashFlowStatements` (+ quarterly variants) returning the same `IncomeStatementYear[]`/`BalanceSheetYear[]`/`CashFlowYear[]` shapes the rest of the pipeline already expects.
 2. Insert it into `aggregate.ts`'s `mergeYearsBySource` priority chains as the **lowest** priority (SEC EDGAR > Yahoo > FMP > EODHD) for years SEC/Yahoo/FMP already cover well, but as the **only** source for fiscal years before each filer's XBRL mandate date — i.e., EODHD's real value-add is filling in years strictly older than whatever SEC EDGAR's earliest year for that filer turns out to be, not competing with SEC EDGAR where SEC EDGAR already has audited data.

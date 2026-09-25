@@ -5,7 +5,7 @@ import { Resend } from "resend";
  * `new Resend(apiKey)` would throw immediately for every environment that
  * hasn't set RESEND_API_KEY yet (every environment until someone actually
  * configures it), which would break importing this file at all. Instead
- * this mirrors the SEC_EDGAR_CONTACT/FMP_API_KEY "optional integration,
+ * this mirrors the FMP_API_KEY "optional integration,
  * documented fallback" pattern already used elsewhere in this app:
  * isEmailConfigured() lets a call site check first and fall back to
  * something else (see app/api/auth/request-password-reset/route.ts, which

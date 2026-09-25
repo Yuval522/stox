@@ -23,7 +23,7 @@ Copy `.env.local.example` to `.env.local` and read its inline comments — each 
 - `ANTHROPIC_API_KEY` — required for the Strategy Builder's real NL parsing (`lib/ai/anthropic.ts` / `lib/strategy/parse.ts`); without it, `/api/strategy` transparently falls back to `lib/strategy/mock-parse.ts`, a local keyword matcher (the response carries `parsed.mock: true` so the UI can show an "offline demo mode" indicator).
 - `API_KEY_ENCRYPTION_SECRET` — required for `/api/settings/api-keys` (per-user Finnhub/Polygon/Alpha Vantage keys, AES-256-GCM encrypted at rest — see `lib/security/encryption.ts`). Changing this after keys are saved makes them permanently undecryptable.
 - `CRON_SECRET` — required for the Strategy Builder universe-refresh cron to run at all (`app/api/cron/refresh-strategy-universe`, schedule in `vercel.json`); Vercel injects the matching `Authorization: Bearer` header automatically on scheduled invocations.
-- `SEC_EDGAR_CONTACT`, `FMP_API_KEY`, `MARKET_DATA_CACHE_TTL_MS` — optional; each has a documented, non-broken fallback if unset.
+- `FMP_API_KEY`, `MARKET_DATA_CACHE_TTL_MS` — optional; each has a documented, non-broken fallback if unset.
 
 Missing required secrets fail loudly (a clear error/503) rather than silently degrading — this is a deliberate pattern used throughout (`dbErrorJson` in `lib/http/noStore.ts`, the strategy route, the API-keys route), not something to "fix" by adding a quiet fallback.
 
@@ -34,10 +34,9 @@ Missing required secrets fail loudly (a clear error/503) rather than silently de
 
 ### Data layer (financial data)
 No single source of truth — `lib/finance/` fetches from multiple providers and merges/prioritizes:
-- `yahoo.ts` (via `yahoo-finance2`) is the primary/default source for quotes and recent fundamentals.
-- `providers/sec-edgar.ts` is the only source deep enough for genuine 10-year+ fundamentals history (Yahoo's free tier hard-caps at ~4 annual periods regardless of requested range); requires a declared `SEC_EDGAR_CONTACT` User-Agent or SEC will 403.
+- `yahoo.ts` (via `yahoo-finance2`) is the primary/default source for quotes and fundamentals. The SEC EDGAR integration that previously backed deep (10-year+) fundamentals history has been removed entirely (per explicit request — no code path makes requests to SEC EDGAR); Yahoo's free tier hard-caps annual fundamentals at ~4 periods (~5 quarters) regardless of requested range, and **this is now a hard limitation with no workaround source**, not a documented optional integration. A "10 Years"/"All Available" range selection simply shows however much data Yahoo (+ FMP) actually has — `getAvailableRanges()` (`chart-transform.ts`) computes its options from actual data depth, so this degrades gracefully.
 - `providers/fmp.ts`, `finnhub.ts`, `alphaVantage.ts`, `polygon.ts` are optional secondary/backfill sources (some need a user-supplied key via Settings → API Keys, stored encrypted).
-- `aggregate.ts` merges historical statements **whole-row-per-fiscal-year** in fixed priority order (SEC EDGAR → Yahoo → FMP), never blending individual line items across sources within the same year, and tags each merged row with `dataSource` + a `dataDiscrepancy` flag when sources disagree beyond tolerance — read its doc comment before changing merge/priority logic, the reasoning is non-obvious.
+- `aggregate.ts` merges historical statements **whole-row-per-fiscal-year** in fixed priority order (Yahoo → FMP), never blending individual line items across sources within the same year, and tags each merged row with `dataSource` + a `dataDiscrepancy` flag when sources disagree beyond tolerance — read its doc comment before changing merge/priority logic, the reasoning is non-obvious.
 - `useLiveQuotes.ts` / `useBackgroundRefresh.ts` drive client-side polling; `cache.ts` provides the in-process TTL cache (`MARKET_DATA_CACHE_TTL_MS`) that keeps repeated requests from re-hitting upstream providers.
 
 ### Database

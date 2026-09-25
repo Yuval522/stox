@@ -45,9 +45,8 @@ async function fmpGet<T>(path: string, params: Record<string, string> = {}): Pro
 
   try {
     // Revalidate hourly — fundamentals move slowly, no need to hit FMP's
-    // rate-limited free tier on every request. AbortSignal.timeout: same
-    // reasoning as sec-edgar.ts's FETCH_TIMEOUT_MS — this is awaited inside
-    // a Promise.all in getFundamentals() (yahoo.ts), so a hung FMP request
+    // rate-limited free tier on every request. AbortSignal.timeout: this is
+    // awaited inside a Promise.all in getFundamentals() (yahoo.ts), so a hung FMP request
     // would otherwise block the entire fundamentals fetch, not just this
     // opt-in enrichment layer.
     const res = await fetch(url.toString(), { next: { revalidate: 3600 }, signal: AbortSignal.timeout(10_000) });
@@ -56,8 +55,7 @@ async function fmpGet<T>(path: string, params: Record<string, string> = {}): Pro
       // short-circuits above and that's expected, silent behavior. A
       // configured key that's failing (bad key, exhausted free-tier quota,
       // rate limit) is a real, previously-invisible reason this fallback
-      // layer contributes nothing — see the matching diagnostic logging in
-      // providers/sec-edgar.ts for why this matters for the "range
+      // layer contributes nothing — worth logging for the "range
       // selector doesn't show more history" class of report.
       console.warn(`[Stox] FMP request failed: ${path} — HTTP ${res.status} ${res.statusText}`);
       return null;
@@ -135,13 +133,13 @@ export async function fetchFmpKeyMetricsTTM(symbol: string): Promise<FmpKeyMetri
 }
 
 // ---------------------------------------------------------------------------
-// Multi-source aggregation (lib/finance/aggregate.ts) — third-tier fallback
-// for whichever fiscal years neither SEC EDGAR (primary deep-history source)
-// nor Yahoo (recent data / non-SEC-registered tickers) came back with.
-// Note: FMP's free tier caps historical annual statements at roughly 5
-// years as of their current pricing, so this mainly helps fill isolated
-// gaps rather than provide depth on its own — see fetchSecFinancials() in
-// providers/sec-edgar.ts for the actual 10-year source.
+// Multi-source aggregation (lib/finance/aggregate.ts) — secondary fallback
+// for whichever fiscal years Yahoo (the primary source) didn't come back
+// with. Note: FMP's free tier caps historical annual statements at roughly
+// 5 years as of their current pricing, so this mainly helps fill isolated
+// gaps rather than provide depth on its own — this app has no source deep
+// enough to back a genuine 10-year+ range (see CLAUDE.md's Data layer
+// section).
 // ---------------------------------------------------------------------------
 
 export interface FmpIncomeStatement {

@@ -5,7 +5,6 @@ import {
   TrendingUp,
   Landmark,
   Wallet,
-  FileText,
   Percent,
   Target,
   GitCompare,
@@ -21,7 +20,6 @@ import { EstimatesPanel } from "./EstimatesPanel";
 import { ComparePanel } from "./ComparePanel";
 import { ValuationCalculator } from "./ValuationCalculator";
 import { AIInsightsPanel } from "./AIInsightsPanel";
-import { ReportsPanel } from "./ReportsPanel";
 import { RatiosPanel } from "./RatiosPanel";
 import { ScorePanel } from "./ScorePanel";
 import { toDisplayUnit } from "@/lib/format/currency";
@@ -40,7 +38,6 @@ const TABS = [
   "Income",
   "Balance",
   "Cash Flow",
-  "Reports",
   "Ratios",
   "Estimates",
   "Compare",
@@ -58,7 +55,6 @@ const TAB_ICONS: Record<Tab, LucideIcon> = {
   Income: TrendingUp,
   Balance: Landmark,
   "Cash Flow": Wallet,
-  Reports: FileText,
   Ratios: Percent,
   Estimates: Target,
   Compare: GitCompare,
@@ -145,7 +141,7 @@ export function DataExplorerTabs({
   // only its visibility (via the `hidden` utility class, not conditional
   // rendering) toggles when switching away. A panel still only mounts the
   // *first* time its tab is opened, so tabs the user never visits (e.g. AI
-  // Insights, Reports) still incur zero cost until then, and nothing
+  // Insights) still incur zero cost until then, and nothing
   // renders into a hidden container on its very first paint (avoids the
   // classic "chart measures 0-width because it first rendered while
   // display:none" failure mode some chart libraries have).
@@ -329,11 +325,6 @@ export function DataExplorerTabs({
               metrics={metrics}
               currency={reportingCurrency}
             />
-          </div>
-        )}
-        {visitedTabs.has("Reports") && (
-          <div className={tab === "Reports" ? undefined : "hidden"}>
-            <ReportsPanel symbol={quote.symbol} />
           </div>
         )}
         {visitedTabs.has("Ratios") && (

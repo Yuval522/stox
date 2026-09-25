@@ -8,8 +8,8 @@
  * genuinely recomputes values.
  *
  * Chart Type: Quarterly is real too now (see FundamentalsBundle's
- * `*Quarterly` fields in lib/finance/types.ts, populated from SEC EDGAR
- * 10-Qs / Yahoo / FMP — see lib/finance/aggregate.ts) — panels pass
+ * `*Quarterly` fields in lib/finance/types.ts, populated from
+ * Yahoo / FMP — see lib/finance/aggregate.ts) — panels pass
  * whichever dataset (annual or quarterly) matches the current Chart Type
  * selection into filterByRange, with `periodsPerYear` set accordingly so
  * "5 Years" means 5 actual years' worth of periods either way (20

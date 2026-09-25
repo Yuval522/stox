@@ -4,6 +4,8 @@
 
 **Status:** research and evaluation complete for items 1–2 (recommendation: do not integrate Google Finance; Apple Stocks confirms our existing choice of Yahoo, not a new option) and item 4 (recommendation: do not scrape investing.com, same ToS/legal reasoning as item 1). Items 3, 5, and 6 (cross-source triangulation, earnings-aware cache bypass, and discrepancy flagging) are implemented and shipped in `lib/finance/aggregate.ts`, `lib/finance/cache.ts`, `lib/finance/yahoo.ts`, and `components/ticker/SourceAttributionBadge.tsx`.
 
+**Update:** §3 below was written when this app queried three sources (SEC EDGAR, Yahoo, FMP) in parallel. SEC EDGAR has since been removed entirely per explicit request — the app now queries only Yahoo and FMP. The triangulation/majority-vote mechanism §3 describes needs 3+ independent sources to activate (a 2-against-1 majority requires three voters) and is therefore currently dormant code with only two sources configured; the 2-source discrepancy-flagging mechanism (§6) is unaffected and remains active. §3's text below is left as historical record of the original 3-source design.
+
 ---
 
 ## 1. Google Finance — not viable as an integration target
@@ -12,7 +14,7 @@
 
 **The only remaining Google-native access point is `GOOGLEFINANCE()`, a Google Sheets formula** — not an API. It has three disqualifying limitations for this app:
 
-1. **Fundamentals coverage is essentially nil.** `GOOGLEFINANCE()` exposes only P/E ratio and EPS — no revenue, no net income, no balance sheet, no cash flow. It cannot replace or cross-check any of the Income/Balance/Cash Flow statement data this app already pulls from SEC EDGAR/Yahoo/FMP; it isn't a fundamentals source at all.
+1. **Fundamentals coverage is essentially nil.** `GOOGLEFINANCE()` exposes only P/E ratio and EPS — no revenue, no net income, no balance sheet, no cash flow. It cannot replace or cross-check any of the Income/Balance/Cash Flow statement data this app already pulls from Yahoo/FMP; it isn't a fundamentals source at all.
 2. **It's not real-time and not documented as an API contract.** Quotes are delayed up to 20 minutes and the function is explicitly a spreadsheet convenience, not a stable service with published rate limits, SLAs, or a terms-of-service grant for embedding in a third-party product.
 3. **There is no supported way to call it outside Google Sheets.** Using it here would mean either (a) driving an actual Google Sheet as a scraping intermediary, which is fragile and roundabout, or (b) reverse-engineering the same internal endpoint the formula calls — which is scraping, not integration (see below).
 
@@ -34,9 +36,9 @@ Apple's built-in iOS Stocks app has **no public API of its own** — it's a nati
 
 ## 3. Multi-source cross-validation & conflict resolution — implemented
 
-### Design
+### Design (historical — written when SEC EDGAR was still a source; see Update note above)
 
-Every statement fetch already queries SEC EDGAR, Yahoo, and (when configured) FMP **in parallel**, regardless of which one ends up "winning" a given fiscal year under the existing priority-order merge (`mergeYearsBySource` in `aggregate.ts`). That means the data needed to cross-check providers against each other was already being fetched and then discarded — this change puts it to use instead of throwing it away.
+Every statement fetch used to query SEC EDGAR, Yahoo, and (when configured) FMP **in parallel**, regardless of which one ended up "winning" a given fiscal year under the existing priority-order merge (`mergeYearsBySource` in `aggregate.ts`). That meant the data needed to cross-check providers against each other was already being fetched and then discarded — this change put it to use instead of throwing it away. With SEC EDGAR since removed, this app now only ever fetches Yahoo and (when configured) FMP in parallel.
 
 **What changed:** `mergeYearsBySource()` gained an optional `anchorField` parameter. When provided, and when a given fiscal year has data from **all three** sources, the function compares each source's value for that one anchor field (the statement's single most universally-defined figure — `totalRevenue` for income, `totalAssets` for balance, `operatingCashFlow` for cash flow) instead of blindly trusting priority order:
 
@@ -46,15 +48,15 @@ Every statement fetch already queries SEC EDGAR, Yahoo, and (when configured) FM
 
 **Anomaly/stale-figure flagging:** when a demotion happens, a `console.warn` fires (dev-only, matching the existing `warnIfYearsLookStale`/`warnIfDuplicateValuesAcrossYears` diagnostic conventions already in this file) naming the outlier source, its value, and the two corroborating sources' values — so a developer can immediately see *which* provider was wrong for *which* year, not just that "something disagreed."
 
-**Missing-year gap detection** (the "pre-2009 gap" part of the ask) doesn't need new code: `mergeYearsBySource` already unions every year any source reports (nothing is dropped for lack of a "vote"), and the existing per-year source-attribution badges plus `logSourceBreakdown` already show exactly where each source's coverage starts and stops. If SEC EDGAR, Yahoo, and FMP all independently floor out around the same year for a given filer, that convergence *is* the signal that a real structural depth wall exists (as documented in `sec-edgar.ts` and `docs/data-pipeline-architecture.md`) rather than one source's fetch simply failing — the fix for that is adding a source with genuinely different coverage (EODHD), not a smarter merge algorithm.
+**Missing-year gap detection** (the "pre-2009 gap" part of the ask) doesn't need new code: `mergeYearsBySource` already unions every year any source reports (nothing is dropped for lack of a "vote"), and the existing per-year source-attribution badges plus `logSourceBreakdown` already show exactly where each source's coverage starts and stops. This was originally written to describe SEC EDGAR/Yahoo/FMP converging on the same floor year as the signal of a real structural depth wall (see `docs/data-pipeline-architecture.md`); with SEC EDGAR removed, Yahoo and FMP's own ~4-5 year caps are simply this app's fundamentals-depth ceiling — there's no deeper source to compare against anymore.
 
 ### Where it's wired in
 
-All six `mergeYearsBySource` call sites in `getFundamentals()` (`yahoo.ts`) now pass an anchor field: `income`/`incomeQuarterly` → `totalRevenue`, `balance`/`balanceQuarterly` → `totalAssets`, `cashFlow`/`cashFlowQuarterly` → `operatingCashFlow`.
+All six `mergeYearsBySource` call sites in `getFundamentals()` (`yahoo.ts`) pass an anchor field: `income`/`incomeQuarterly` → `totalRevenue`, `balance`/`balanceQuarterly` → `totalAssets`, `cashFlow`/`cashFlowQuarterly` → `operatingCashFlow`. The anchor field still drives the 2-source discrepancy-flagging mechanism (§6) even now that only two sources exist.
 
 ### Why this activates rarely in practice, by design
 
-FMP is opt-in (`FMP_API_KEY`) and most deployments won't have it configured, so the 3-source condition for triangulation won't be met most of the time — the system gracefully degrades to the original 2-source (or 1-source) priority merge, unchanged. This is intentional: the override is a genuine majority-vote mechanism, and a majority vote needs three independent voters to mean anything. Configuring `FMP_API_KEY` doesn't just add a fallback source anymore — it also activates real cross-validation for every symbol FMP covers.
+FMP is opt-in (`FMP_API_KEY`) and most deployments won't have it configured, so with SEC EDGAR removed, the 3-source condition for the majority-vote triangulation above is now effectively never met (this app has at most 2 sources — Yahoo and FMP) — the system runs the original 2-source (or 1-source) priority merge instead, unchanged. This is intentional: the override is a genuine majority-vote mechanism, and a majority vote needs three independent voters to mean anything. The code path remains in place (harmless, dormant) rather than removed, in case a third source is ever added.
 
 ### Verified
 
@@ -72,7 +74,7 @@ A later request asked for `investing.com` specifically as a scraping fallback to
 
 **The fix:** `getEarningsFreshnessEpoch()` runs a cheap, single-module `quoteSummary` probe (`calendarEvents` only — a small fraction of the cost of the full multi-source fetch) ahead of every `getFundamentals()` call, deriving an ISO-date "freshness epoch" from the most recent PAST earnings-call date Yahoo reports. That epoch is folded directly into the cache key (`fundamentals:{SYMBOL}:{epoch}`). As long as a symbol hasn't crossed a new earnings date, the epoch — and therefore the key — stays constant, so caching behaves exactly as before. The moment a new earnings date is crossed, the key changes, `fundamentalsCache.getOrSet` naturally treats it as a miss, and a real, fresh, cross-source-validated fetch runs — with the now-superseded previous key explicitly evicted (`TtlCache.delete`, added for this) so long-lived server processes don't leak stale-keyed entries across many earnings cycles. The probe itself is wrapped in its own 60-second cache so a burst of page loads for the same symbol doesn't trigger a probe per request.
 
-**Honest limitation, stated plainly:** this guarantees Stox *asks* its upstream providers again as soon as the calendar date arrives — it cannot guarantee Yahoo/SEC EDGAR/FMP have already indexed the brand-new quarter at that exact moment; that indexing lag lives entirely on the provider side and no client-side cache policy can close it. What this closes is Stox's *own* added delay on top of whatever the providers already have. A genuinely sub-minute, guaranteed-fresh feed (matching a real institutional terminal) would require a paid low-latency provider (Polygon.io, Finnhub, etc.) as a fourth source — not implemented here since no such credential was provided; the architecture (`mergeYearsBySource`'s layer/priority model) already supports adding one the same way SEC EDGAR/Yahoo/FMP were added, whenever a key becomes available.
+**Honest limitation, stated plainly:** this guarantees Stox *asks* its upstream providers again as soon as the calendar date arrives — it cannot guarantee Yahoo/FMP have already indexed the brand-new quarter at that exact moment; that indexing lag lives entirely on the provider side and no client-side cache policy can close it. What this closes is Stox's *own* added delay on top of whatever the providers already have. A genuinely sub-minute, guaranteed-fresh feed (matching a real institutional terminal) would require a paid low-latency provider (Polygon.io, Finnhub, etc.) as an additional source — not implemented here since no such credential was provided; the architecture (`mergeYearsBySource`'s layer/priority model) already supports adding one the same way Yahoo/FMP were added, whenever a key becomes available.
 
 ## 6. Cross-source discrepancy flagging — implemented
 

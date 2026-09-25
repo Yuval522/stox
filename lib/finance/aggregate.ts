@@ -3,19 +3,22 @@
  *
  * Rather than trusting a single provider for a fiscal year's income
  * statement / balance sheet / cash flow row, getFundamentals() (yahoo.ts)
- * fetches from up to three sources in parallel and this file merges them
+ * fetches from up to two sources in parallel and this file merges them
  * whole-row-per-fiscal-year (never blending individual fields from
  * different sources within the same year — that risks mixing incompatible
  * line-item definitions) in a fixed priority order:
  *
- *   1. SEC EDGAR (sec-edgar.ts)  — audited XBRL data straight from 10-K/20-F
- *      filings, typically 10+ years deep for any SEC-registered filer.
- *      This is what makes a genuine "10 Years" / "All Available" range
- *      selection actually mean something, instead of being capped by
- *      whatever a single quote-data API happens to return.
- *   2. Yahoo Finance (yahoo.ts)  — recent years, and the *only* source for
- *      tickers SEC doesn't register (foreign-only listings with no US ADR).
- *   3. Financial Modeling Prep (providers/fmp.ts) — opt-in (needs
+ *   1. Yahoo Finance (yahoo.ts) — the primary source for every ticker.
+ *      Yahoo's free fundamentalsTimeSeries API has a hard, undocumented
+ *      backend cap of roughly 4 annual periods / ~5 quarters regardless of
+ *      requested range — this app has no source deep enough to back a
+ *      genuine "10 Years" / "All Available" range selection (SEC EDGAR
+ *      previously filled that role; it has been removed — see CLAUDE.md's
+ *      Data layer section), so a 10Y/All request simply returns however
+ *      much Yahoo+FMP actually have. getAvailableRanges() (chart-transform.ts)
+ *      computes its range options from actual data depth, so this degrades
+ *      gracefully rather than crashing or hiding the range options.
+ *   2. Financial Modeling Prep (providers/fmp.ts) — opt-in (needs
  *      FMP_API_KEY), last-resort fallback for whatever gap remains; its
  *      free tier caps history at ~5 years so it rarely adds depth beyond
  *      what Yahoo already covers, but occasionally fills an isolated
@@ -27,12 +30,16 @@
  *
  * Data triangulation: priority order is the default tie-breaker, but
  * mergeYearsBySource's optional `anchorField` lets it actually cross-check
- * providers against each other for years all three cover, and demote a
- * clear 2-against-1 outlier instead of trusting priority blindly — see
- * that function's doc comment for the exact mechanism and thresholds.
+ * providers against each other for years all sources cover, and demote a
+ * clear outlier instead of trusting priority blindly — see that function's
+ * doc comment for the exact mechanism and thresholds. That outlier-demotion
+ * path specifically needs 3+ independently-fetched sources to form a
+ * majority vote (2 agreeing against 1 outlier), so with this app's current
+ * 2-source setup (Yahoo, FMP) it's dormant code, harmless but inactive —
+ * it'll engage again automatically if a third source is ever added.
  *
- * Discrepancy flagging: separately from the 2-against-1 demotion above
- * (which needs 3 sources to know which one is likely wrong), ANY period
+ * Discrepancy flagging: separately from the outlier-demotion above
+ * (which needs 3+ sources to know which one is likely wrong), ANY period
  * where 2+ sources disagree beyond tolerance on `anchorField` gets a
  * `dataDiscrepancy: true` tag on the merged row — this is deliberately
  * "flag, don't guess": with only 2 disagreeing sources there's no
@@ -66,7 +73,7 @@ export interface SourceLayer<T extends YearRow> {
  * globally, preventing any sign inversions, field-mapping errors, or
  * discrepancies against official reports for all assets").
  *
- * Every provider (Yahoo, SEC EDGAR, FMP) exposes its own "free cash flow"
+ * Every provider (Yahoo, FMP) exposes its own "free cash flow"
  * figure computed by that provider's own, undocumented definition — not
  * guaranteed to agree with either of the other two, or with the company's
  * own reported figure. Since this app merges cash-flow rows WHOLE-ROW-PER-
@@ -82,11 +89,10 @@ export interface SourceLayer<T extends YearRow> {
  * downstream (FCF Yield, P/FCF, DCF inputs — see valuation-methods.ts /
  * fair-value.ts) without any visible error.
  *
- * The fix is structural, not per-source: every one of this app's three
+ * The fix is structural, not per-source: every one of this app's
  * CashFlowYear-mapping functions (mapCashFlowRow/fmpCashFlowToYears in
- * yahoo.ts, toSecCashFlowRows in providers/sec-edgar.ts) — and the TTM
- * rollup engine (ttm.ts) that sums 4 quarters of already-mapped rows —
- * MUST go through these three functions and nothing else:
+ * yahoo.ts) — and the TTM rollup engine (ttm.ts) that sums 4 quarters of
+ * already-mapped rows — MUST go through these three functions and nothing else:
  *   - normalizeCapex(): forces CapEx to always be <= 0 (an investing
  *     outflow), regardless of the raw sign a provider happens to report.
  *   - normalizeStockBasedComp(): forces SBC to always be >= 0 (a non-cash
@@ -125,10 +131,9 @@ export interface SourceLayer<T extends YearRow> {
  * MSFT (~June), AAPL (~September), CRM/Salesforce (~January), among others.
  *
  * The single shared implementation of this formula — yahoo.ts's
- * makeFiscalQuarterLabelFn (Yahoo quarterly rows) and sec-edgar.ts's
- * quarterlySeries/quarterlySeriesDetailed (SEC EDGAR quarterly rows) both
- * call this rather than each carrying their own copy of the arithmetic, so
- * the two sources can never independently drift on what fiscal year a
+ * makeFiscalQuarterLabelFn (Yahoo quarterly rows) calls this rather than
+ * carrying its own copy of the arithmetic, so every quarterly-labeling call
+ * site can never independently drift on what fiscal year a
  * given period-end date belongs to. That matters because mergeYearsBySource
  * below dedups/merges quarterly rows across sources by exact fiscalYear-
  * label STRING match — both sources computing the identical label for the
@@ -138,7 +143,7 @@ export interface SourceLayer<T extends YearRow> {
  * comment for the exact NVDA/AAPL/MSFT bug this class of mismatch caused
  * once already, on the quarter-NUMBER side; this fixes the equivalent bug
  * on the quarter-YEAR side, root-caused via a CRM/Salesforce report —
- * FYE January 31 — where SEC EDGAR's quarterly rows for one fiscal year
+ * FYE January 31 — where Yahoo's quarterly rows for one fiscal year
  * were splitting across two different label-year prefixes, breaking
  * synthesizeIncomeQ4/synthesizeCashFlowQ4/synthesizeBalanceQ4's
  * `${annualLabel}-Q1/Q2/Q3` lookups for any such company).
@@ -192,7 +197,7 @@ const CROSS_VALIDATION_MIN_MAGNITUDE = 1_000_000;
  *
  * Data-triangulation override (the `anchorField` option): every layer is
  * fetched in parallel regardless of who ultimately wins (see
- * getFundamentals() in yahoo.ts), so for any fiscal year where 3 sources
+ * getFundamentals() in yahoo.ts), so for any fiscal year where 3+ sources
  * all report data, this function can — and now does — actually compare
  * them instead of blindly trusting priority order. If the two
  * lower-priority sources agree closely with each other on `anchorField`
@@ -201,22 +206,22 @@ const CROSS_VALIDATION_MIN_MAGNITUDE = 1_000_000;
  * sharply from BOTH of them, that's a 2-against-1 majority against the
  * "winner" — a real signal, not routine provider noise — so the row is
  * demoted to the next-best (whole-row, still un-blended — see this file's
- * module doc comment) source instead. This only ever activates with 3
- * genuinely present sources for the same year (rare when FMP is
- * unconfigured, by design — see CROSS_VALIDATION_* thresholds), and when
- * it doesn't activate, behavior is byte-for-byte identical to the
- * original priority-order merge. Omitting `anchorField` entirely (existing
- * call sites that haven't opted in) preserves the original behavior
- * exactly.
+ * module doc comment) source instead. This only ever activates with 3+
+ * genuinely present sources for the same year — with this app's current
+ * 2-source setup (Yahoo, FMP), that condition is never met, so this path is
+ * dormant (present for when/if a third source is ever added) and behavior
+ * is byte-for-byte identical to the original priority-order merge. Omitting
+ * `anchorField` entirely (existing call sites that haven't opted in)
+ * preserves the original behavior exactly.
  *
  * Zero-field backfill (the `backfillZeroFields` option): live bug reports
  * against AT&T found `grossProfit`/`operatingIncome` (income) and
- * `totalLiabilities` (balance) coming back as a hard `0` from SEC EDGAR for
- * an operating company with real, positive revenue/assets — not because
- * the value is genuinely zero, but because that filer simply doesn't tag
- * the specific XBRL concept toSecIncomeRows/toSecBalanceRows (sec-edgar.ts)
- * looks for (e.g. a cost-of-revenue tag variant this app doesn't check),
- * so the derivation silently falls back to 0. Because mergeYearsBySource
+ * `totalLiabilities` (balance) coming back as a hard `0` from the
+ * winning source for an operating company with real, positive revenue/
+ * assets — not because the value is genuinely zero, but because that
+ * provider simply doesn't report the specific line item this app looks
+ * for (e.g. a cost-of-revenue field variant), so the derivation silently
+ * falls back to 0. Because mergeYearsBySource
  * otherwise selects a WHOLE row per year, that fabricated 0 wins outright
  * even when Yahoo/FMP have a real, non-zero number for that one field —
  * their whole row loses priority for the year, so their good data for
@@ -364,7 +369,7 @@ export interface SourceRun {
 
 /**
  * Collapses a merged, chronologically-sorted row list into contiguous
- * same-source runs (e.g. rows tagged sec-edgar for 2016-2023 then yahoo for
+ * same-source runs (e.g. rows tagged yahoo for 2020-2023 then fmp for
  * 2024-2026 become two runs) — shared by both the dev-log line below and
  * the UI attribution badge (see IncomeStatementPanel.tsx etc.) so the two
  * never drift out of sync with each other.
@@ -384,12 +389,11 @@ export function summarizeYearSources<T extends YearRow>(rows: T[]): SourceRun[] 
 }
 
 export const SOURCE_LABELS: Record<FinancialDataSource, string> = {
-  "sec-edgar": "SEC EDGAR",
   yahoo: "Yahoo Finance",
   fmp: "Financial Modeling Prep",
 };
 
-/** Human-readable one-liner, e.g. "2016-2023: SEC EDGAR · 2024-2026: Yahoo Finance". */
+/** Human-readable one-liner, e.g. "2020-2023: Yahoo Finance · 2024-2026: Financial Modeling Prep". */
 export function formatSourceSummary(runs: SourceRun[]): string {
   return runs
     .map((r) => `${r.from === r.to ? r.from : `${r.from}–${r.to}`}: ${SOURCE_LABELS[r.source]}`)
@@ -419,9 +423,7 @@ function logSourceBreakdown<T extends YearRow>(label: string, symbol: string, ro
  * NOT reproduced against this codebase: every fiscal-year string in this
  * pipeline is read directly from the row's own actual reported period —
  * annualLabel()/quarterLabel() in yahoo.ts pull `date.getFullYear()` off
- * the real Date each fundamentalsTimeSeries row carries, and
- * annualSeries()/quarterlySeries() in providers/sec-edgar.ts key off each
- * XBRL fact's own `fy` field (falling back to its `end` date) — there is
+ * the real Date each fundamentalsTimeSeries row carries — there is
  * no "currentYear - N" anchor-arithmetic anywhere in this file or those
  * two, which is what the report's root-cause hypothesis would require.
  * Cross-referencing the report's own worked AAPL example against this
@@ -430,8 +432,8 @@ function logSourceBreakdown<T extends YearRow>(label: string, symbol: string, ro
  * ($383.285B), not FY2025's.
  *
  * Kept as a standing safeguard regardless — a genuinely stale/misconfigured
- * deployment (e.g. SEC_EDGAR_CONTACT unset *and* Yahoo rate-limited) could
- * still produce the surface symptom the report described: real, correctly
+ * deployment (e.g. Yahoo rate-limited with no fresher FMP data to fall back
+ * on) could still produce the surface symptom the report described: real, correctly
  * labeled, but old data silently presented as current. A gap this large is
  * worth surfacing loudly during development rather than only being caught
  * by an ad hoc diff against a live provider payload. Dev-only, like the
@@ -458,8 +460,8 @@ function warnIfYearsLookStale<T extends YearRow>(label: string, symbol: string, 
       `[Stox] ${label}(${symbol}): newest fiscal year label is ${newest}, ` +
         `${currentYear - newest} years behind the current calendar year (${currentYear}). ` +
         `Could be a genuinely slow/incomplete data source, or a labeling bug — verify ` +
-        `against a raw provider payload (SEC EDGAR's companyfacts API, or Yahoo's ` +
-        `fundamentalsTimeSeries) before trusting it.`
+        `against a raw provider payload (Yahoo's fundamentalsTimeSeries, or FMP's ` +
+        `statement endpoints) before trusting it.`
     );
   }
 }
@@ -470,7 +472,7 @@ function warnIfYearsLookStale<T extends YearRow>(label: string, symbol: string, 
  * verified via web search to be wrong — NVIDIA's real FY2026 revenue was
  * $215.9B, while $61B numerically matches NVIDIA's real FY2024 revenue of
  * $60.922B almost exactly). The exact upstream root cause couldn't be
- * pinned down without live network access to Yahoo/SEC EDGAR in this
+ * pinned down without live network access to Yahoo in this
  * environment, and per this file's standing principle, guessing at a "fix"
  * risks silently corrupting otherwise-correct data — worse than the
  * original bug. This instead detects the specific fingerprint a
@@ -530,7 +532,7 @@ function warnIfDuplicateValuesAcrossYears<T extends YearRow>(label: string, symb
  *     tag came back empty for that specific period while the smaller
  *     current-portion tag didn't).
  *
- * Neither could be root-caused without live SEC EDGAR/Yahoo access in
+ * Neither could be root-caused without live Yahoo access in
  * this sandbox (see this file's module doc comment on that limitation),
  * and — unlike the exactly-0 case backfillZeroFields handles — there's no
  * structurally safe automatic fix here: both fields CAN legitimately move
@@ -563,16 +565,15 @@ export function warnIfTrailingRowImplausible<T extends YearRow>(
       `[Stox] ${label}(${symbol}): "${anchorField}" moved from ${lastVal.toLocaleString("en-US")} ` +
         `(${last.fiscalYear}) to ${trailingVal.toLocaleString("en-US")} (${trailing.fiscalYear}) — a ` +
         `${(relDiff * 100).toFixed(0)}% change in one period. Could be real (acquisition, major debt ` +
-        `issuance) or a tag-mapping/dimensional-data artifact — verify against a raw SEC EDGAR/Yahoo ` +
+        `issuance) or a field-mapping artifact — verify against a raw Yahoo/FMP ` +
         `payload before trusting either figure.`
     );
   }
 }
 
 /**
- * Defensive backstop for the class of bug applyKnownSplitAdjustmentToNonSecRows
- * (sec-edgar.ts) and the filed-date fix inside toSecIncomeRows both target —
- * an adjacent-fiscal-year diluted-share-count ratio outside a plausible
+ * Defensive backstop for the class of bug applyKnownSplitAdjustment
+ * (stockSplits.ts) targets — an adjacent-fiscal-year diluted-share-count ratio outside a plausible
  * organic range (buybacks/issuance/secondary offerings don't move share
  * count 5x in a year; only a stock split, a mis-scaled unit, or a
  * still-undetected split boundary does). "Flag, don't guess" — same
@@ -604,7 +605,7 @@ export function warnIfShareCountDiscontinuity<T extends YearRow & { sharesOutsta
           `${prev.toLocaleString("en-US")} (${rows[i - 1].fiscalYear}) to ${cur.toLocaleString("en-US")} ` +
           `(${rows[i].fiscalYear}) — a ${ratio.toFixed(1)}x change in one period, outside the range an ` +
           `organic buyback/issuance program ever produces. Likely an undetected/mistimed stock split or a ` +
-          `unit-scale tag mismatch — verify against the raw SEC EDGAR/Yahoo payload for these two years.`
+          `unit-scale field mismatch — verify against the raw Yahoo/FMP payload for these two years.`
       );
     }
   }
@@ -615,10 +616,10 @@ export function warnIfShareCountDiscontinuity<T extends YearRow & { sharesOutsta
  * `fiscalYear` label against the already-merged income array covering the
  * same periods — see CashFlowYear.totalRevenue's doc comment in types.ts
  * for why this is a one-time post-merge join in getFundamentals() (yahoo.ts)
- * rather than sourced per-provider the way `netIncome` is: none of the
- * three cash-flow sources (Yahoo's fundamentalsTimeSeries cash-flow module,
- * SEC EDGAR XBRL cash-flow facts, FMP's cash-flow endpoint) consistently
- * carry a revenue figure, but every source's INCOME statement always does,
+ * rather than sourced per-provider the way `netIncome` is: neither
+ * cash-flow source (Yahoo's fundamentalsTimeSeries cash-flow module,
+ * FMP's cash-flow endpoint) consistently carries a revenue figure, but
+ * every source's INCOME statement always does,
  * and by the time this runs both `cashFlow`/`cashFlowQuarterly` and
  * `income`/`incomeQuarterly` are already fully merged (including their
  * TTM/MRQ-equivalent trailing row), so a single label match covers real
@@ -639,9 +640,7 @@ export function backfillCashFlowRevenue(cashFlow: CashFlowYear[], income: Income
 /**
  * Ticker-recycling / ghost-data fix (live bug report: newly-IPOed stocks
  * showing financial reports "from 3+ years ago" that belong to a different,
- * unrelated company). Yahoo — and, just as often, SEC EDGAR, priority-1 in
- * mergeYearsBySource precisely because it goes "10+ years deep for any
- * SEC-registered filer" (see this file's top doc comment) — key their
+ * unrelated company). Yahoo (and FMP) key their
  * historical data purely by ticker SYMBOL, not by company identity: when a
  * symbol is recycled after an older company is delisted/defunct, a
  * brand-new IPO under that same symbol can inherit the OLD company's
@@ -661,7 +660,7 @@ export function backfillCashFlowRevenue(cashFlow: CashFlowYear[], income: Income
  * discarded EVERY fiscal year before the IPO — including the 2-3 years of
  * audited pre-IPO financials an S-1/F-1 is required to disclose (SEC Reg
  * S-K Item 8 generally requires 2-3 years of audited statements in a
- * registration statement, which is exactly why SEC EDGAR / Yahoo have that
+ * registration statement, which is exactly why Yahoo has that
  * history at all for a company that just went public). For a company that
  * IPOs mid-year with no complete fiscal year of its own filed yet (SPCX's
  * case — IPO'd in June, and no full FY2026 10-K exists as of this fix),

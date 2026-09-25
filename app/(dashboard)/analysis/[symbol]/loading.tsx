@@ -3,8 +3,8 @@ import { Skeleton } from "@/components/shared/Skeleton";
 /**
  * Mobile UX audit fix: this route previously had no loading.tsx at all, so
  * Next.js showed nothing but a blank content area for however long
- * getFundamentals() (yahoo.ts) took — SEC EDGAR + Yahoo + FMP fetched in
- * parallel, plus ~10 years of daily price history, is comfortably a
+ * getFundamentals() (yahoo.ts) took — Yahoo + FMP fetched in
+ * parallel, plus daily price history, is comfortably a
  * multi-second round trip on a slow mobile connection. Fast scrolling
  * straight into that gap (navigating from Watchlist/Portfolio/search
  * results into a ticker page) read as a broken/frozen page rather than

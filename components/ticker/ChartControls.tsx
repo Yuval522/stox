@@ -68,7 +68,7 @@ const SELECT_CLASS =
  * Type genuinely switches between the annual and quarterly datasets
  * fetched in getFundamentals() (see lib/finance/aggregate.ts) — no longer
  * a single hardcoded "Annually" choice now that real quarterly data
- * (SEC EDGAR 10-Qs / Yahoo / FMP) is wired up.
+ * (Yahoo / FMP) is wired up.
  */
 export function ChartControls({
   range,

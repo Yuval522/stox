@@ -24,7 +24,7 @@ export const dynamic = "force-dynamic";
  * Deliberately uses the lightweight getQuotes() (a single quote-cache
  * lookup) rather than the page component's own getFundamentals() call —
  * that's a much heavier multi-module bundle (quoteSummary,
- * fundamentalsTimeSeries x6, SEC EDGAR, FMP, ...) that generateMetadata
+ * fundamentalsTimeSeries x6, FMP, ...) that generateMetadata
  * doesn't need just to build a title. Falls back to a generic-but-still-
  * unique title (rather than throwing, or falling through to the root
  * layout's fully generic one) if the quote lookup fails for any reason —
