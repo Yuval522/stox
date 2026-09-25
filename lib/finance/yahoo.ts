@@ -699,6 +699,18 @@ function toIncomeRows(
     // contribute an empty period to the chart/table.
     .filter((y) => y.totalRevenue !== 0 || y.netIncome !== 0 || y.grossProfit !== 0);
 
+  // TEMP DEBUG (chart bar-count investigation, remove once confirmed):
+  // always logs raw-response length vs. dated-row count vs. final
+  // post-phantom-filter count, so real production evidence can confirm
+  // how many periods Yahoo's own response actually contains BEFORE this
+  // app touches it at all, and whether the phantom-zero filter below drops
+  // any of them. No secrets logged.
+  const rawDatedCount = rows.filter((row) => row.date instanceof Date).length;
+  console.log(
+    `[Stox][TEMP DEBUG] toIncomeRows(${label}, ${symbol}): Yahoo response rows=${rows.length}, ` +
+      `dated rows=${rawDatedCount}, after phantom-zero filter=${periods.length}.`
+  );
+
   warnIfFiscalYearGaps(label, symbol, periods.map((y) => y.fiscalYear));
   return periods;
 }
@@ -821,6 +833,15 @@ function toBalanceRows(
         y.totalCurrentLiabilities !== 0 ||
         y.cashAndShortTermInvestments !== 0
     );
+
+  // TEMP DEBUG (chart bar-count investigation, remove once confirmed) —
+  // see matching comment in toIncomeRows above.
+  const rawDatedCountBalance = rows.filter((row) => row.date instanceof Date).length;
+  console.log(
+    `[Stox][TEMP DEBUG] toBalanceRows(${label}, ${symbol}): Yahoo response rows=${rows.length}, ` +
+      `dated rows=${rawDatedCountBalance}, after phantom-zero filter=${periods.length}.`
+  );
+
   warnIfFiscalYearGaps(label, symbol, periods.map((y) => y.fiscalYear));
   return periods;
 }
@@ -886,6 +907,15 @@ function toCashFlowRows(
     // a dated-but-otherwise-empty row for the oldest period renders as an
     // axis label with an invisible zero-height bar. Drop it instead.
     .filter((y) => y.operatingCashFlow !== 0 || y.freeCashFlow !== 0 || y.netIncome !== 0);
+
+  // TEMP DEBUG (chart bar-count investigation, remove once confirmed) —
+  // see matching comment in toIncomeRows above.
+  const rawDatedCountCashFlow = rows.filter((row) => row.date instanceof Date).length;
+  console.log(
+    `[Stox][TEMP DEBUG] toCashFlowRows(${label}, ${symbol}): Yahoo response rows=${rows.length}, ` +
+      `dated rows=${rawDatedCountCashFlow}, after phantom-zero filter=${periods.length}.`
+  );
+
   warnIfFiscalYearGaps(label, symbol, periods.map((y) => y.fiscalYear));
   return periods;
 }
@@ -1307,11 +1337,17 @@ export async function getFundamentals(symbolRaw: string): Promise<FundamentalsBu
       const balancePeriod1 = new Date();
       balancePeriod1.setFullYear(balancePeriod1.getFullYear() - 11);
 
-      // Trailing ~2 years is enough to cover earningsHistory's ~4 quarters
-      // with room to spare for the nearest-date matching in
-      // findNearestQuarterlyRevenue().
+      // Widened from 2 to 3 years (chart-rendering QA pass, confirmed
+      // against Yahoo's real fundamentalsTimeSeries depth: up to 5
+      // quarters + a TTM appendix). 2 years was already enough margin for
+      // a typical calendar-fiscal filer's 5 most recent quarters (~15
+      // months), but left near-zero slack for a filer with reporting lag
+      // or a non-calendar fiscal year whose 5th-most-recent quarter-end
+      // could land close to the old boundary — widened purely as a safety
+      // margin against ever silently truncating a real available quarter,
+      // still comfortably covers earningsHistory's ~4 quarters too.
       const quarterlyPeriod1 = new Date();
-      quarterlyPeriod1.setFullYear(quarterlyPeriod1.getFullYear() - 2);
+      quarterlyPeriod1.setFullYear(quarterlyPeriod1.getFullYear() - 3);
 
       const [
         quotes,

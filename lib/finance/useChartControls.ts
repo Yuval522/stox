@@ -153,7 +153,13 @@ export function useChartControls<T extends { fiscalYear: string }>(
     return yoyTrailing ? [...base, yoyTrailing] : base;
   }
 
-  const totalYears = chartType === "quarterly" ? Math.floor(historical.length / 4) : historical.length;
+  // Math.ceil, not Math.floor: Yahoo's real quarterly depth is ~5 quarters
+  // (confirmed directly against Yahoo's own data), not a clean multiple of
+  // 4 — flooring 5/4 to 1 understated totalYears, which getAvailableRanges()
+  // uses to decide which Select Range options are non-redundant. Ceiling
+  // correctly reports "5 quarters" as ~2 years of depth rather than
+  // rounding a genuine partial extra year down to nothing.
+  const totalYears = chartType === "quarterly" ? Math.ceil(historical.length / 4) : historical.length;
 
   return {
     chartType,
