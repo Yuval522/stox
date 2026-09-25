@@ -133,6 +133,20 @@ const SCHEMA_STATEMENTS = [
     expires_at BIGINT NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)`,
+  // Password reset tokens: opaque random token (same style as sessions'),
+  // short-lived (1 hour, see lib/auth/passwordReset.ts), single-use —
+  // deleted the moment it's redeemed or superseded by a newer request for
+  // the same user. Deliberately a separate table from `sessions` even
+  // though the shape is similar: a reset token proves "requested a
+  // password change," not "is currently logged in," and the two must
+  // never be confused or accepted interchangeably by any route.
+  `CREATE TABLE IF NOT EXISTS password_resets (
+    token TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    created_at BIGINT NOT NULL,
+    expires_at BIGINT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_password_resets_user_id ON password_resets(user_id)`,
   // Deliberately a single JSON blob per (user_id, data_key) rather than
   // normalized per-holding/per-symbol tables — this exactly mirrors the
   // shape each client store (portfolio/watchlist/settings) already

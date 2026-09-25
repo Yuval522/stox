@@ -59,6 +59,8 @@ interface AuthContextValue {
   signup: (input: { username: string; email: string; password: string }) => Promise<{ ok: true } | { ok: false; error: string }>;
   login: (input: { identifier: string; password: string }) => Promise<{ ok: true } | { ok: false; error: string }>;
   logout: () => Promise<void>;
+  requestPasswordReset: (input: { email: string }) => Promise<{ ok: true; message: string } | { ok: false; error: string }>;
+  resetPassword: (input: { token: string; newPassword: string }) => Promise<{ ok: true } | { ok: false; error: string }>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -414,6 +416,45 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return { ok: true };
   }, []);
 
+  const requestPasswordReset = useCallback<AuthContextValue["requestPasswordReset"]>(async (input) => {
+    let res: Response;
+    try {
+      res = await fetch("/api/auth/request-password-reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      });
+    } catch {
+      return { ok: false, error: "Network error — please try again" };
+    }
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, error: body.error ?? "Request failed" };
+    return { ok: true, message: body.message ?? "If an account exists for that email, a password reset link has been generated." };
+  }, []);
+
+  const resetPassword = useCallback<AuthContextValue["resetPassword"]>(async (input) => {
+    let res: Response;
+    try {
+      res = await fetch("/api/auth/reset-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      });
+    } catch {
+      return { ok: false, error: "Network error — please try again" };
+    }
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, error: body.error ?? "Reset failed" };
+
+    // Same overwrite-with-server-data-on-authentication semantics as
+    // login() — resetting a password logs the user in as a side effect
+    // (reset-password's route issues a fresh session), so this browser's
+    // local state must be reconciled to that account's real saved data.
+    await hydrateAllFromServer({ strict: true });
+    if (body.user) setUser(body.user);
+    return { ok: true };
+  }, []);
+
   const logout = useCallback(async () => {
     try {
       await fetch("/api/auth/logout", { method: "POST" });
@@ -429,7 +470,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, ready, signup, login, logout }}>{children}</AuthContext.Provider>
+    <AuthContext.Provider
+      value={{ user, ready, signup, login, logout, requestPasswordReset, resetPassword }}
+    >
+      {children}
+    </AuthContext.Provider>
   );
 }
 
