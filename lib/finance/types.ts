@@ -335,9 +335,11 @@ export interface FundamentalsBundle {
   profile: CompanyProfile;
   metrics: TickerMetrics;
   /**
-   * Annual, oldest first — depth varies by source (see aggregate.ts),
-   * typically 10+ years for SEC-registered filers. May end with one
-   * trailing-appendix row: `fiscalYear: "TTM"` (trailing twelve months) on
+   * Annual, oldest first — depth is capped by Yahoo's free-tier
+   * fundamentalsTimeSeries limit of ~4 annual periods (see aggregate.ts and
+   * FinancialDataSource's doc comment); there is no source in this app deep
+   * enough to go beyond that. May end with one trailing-appendix row:
+   * `fiscalYear: "TTM"` (trailing twelve months) on
    * `income`/`cashFlow`, or `fiscalYear: "MRQ"` (most recent quarter) on
    * `balance` — see splitTrailingRow() in chart-transform.ts, which panels
    * use to pull it out before Select Range filtering and always re-append
