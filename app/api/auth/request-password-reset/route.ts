@@ -1,5 +1,6 @@
 import { getDb, ensureSchema } from "@/lib/db/client";
 import { createPasswordResetToken } from "@/lib/auth/passwordReset";
+import { sendPasswordResetEmail, isEmailConfigured } from "@/lib/email/resend";
 import { noStoreJson, dbErrorJson } from "@/lib/http/noStore";
 
 // Mobile state-sync fix: never let this be cached — see lib/http/noStore.ts.
@@ -40,19 +41,43 @@ export async function POST(request: Request) {
     if (!row) return genericResponse;
 
     const userId = String(row.id);
+    const username = String(row.username);
     const token = await createPasswordResetToken(userId);
 
-    // No email provider is configured in this project (no RESEND_API_KEY or
-    // equivalent — see .env.local.example) so the reset token is delivered
-    // via server log instead of a real email, matching this project's
-    // established "optional integration, documented fallback" pattern
-    // (see FMP_API_KEY/SEC_EDGAR_CONTACT). Visible via `vercel logs` in
-    // production or the terminal in local dev. TODO: wire up a real email
-    // provider and stop logging tokens once one is configured.
-    console.log(
-      `[Stox] Password reset requested for user "${String(row.username)}" (${normalized}). ` +
-        `Reset token (valid 1 hour): ${token}`
-    );
+    // Deliberately derived from the incoming request rather than a
+    // hardcoded/env-configured domain — this way the emailed link always
+    // points at whichever host actually served the request (a Vercel
+    // preview deployment, production, or http://localhost:3000 in local
+    // dev) with zero extra configuration.
+    const origin = new URL(request.url).origin;
+    const resetUrl = `${origin}/?resetToken=${encodeURIComponent(token)}`;
+
+    if (isEmailConfigured()) {
+      const emailResult = await sendPasswordResetEmail({ to: normalized, username, resetUrl, token });
+      if (!emailResult.ok) {
+        // Sending failed (bad/revoked API key, Resend outage, recipient
+        // rejected, free-tier sender restrictions, ...) — log the real
+        // reason server-side, and still log the token itself as a
+        // fallback so the user isn't locked out of their own account just
+        // because the email didn't go out. The response to the client
+        // stays the same generic message either way (anti-enumeration).
+        console.error(`[Stox] Failed to send password reset email to ${normalized}:`, emailResult.error);
+        console.log(
+          `[Stox] Password reset requested for user "${username}" (${normalized}). ` +
+            `Email delivery failed (see error above) — reset token (valid 1 hour): ${token}`
+        );
+      }
+    } else {
+      // No RESEND_API_KEY configured — documented, non-broken fallback
+      // (see .env.local.example), matching this project's established
+      // "optional integration, documented fallback" pattern already used
+      // for FMP_API_KEY/SEC_EDGAR_CONTACT. Visible via `vercel logs` in
+      // production or the terminal in local dev.
+      console.log(
+        `[Stox] Password reset requested for user "${username}" (${normalized}). ` +
+          `RESEND_API_KEY is not set, so no email was sent — reset token (valid 1 hour): ${token}`
+      );
+    }
 
     return genericResponse;
   } catch (err) {
