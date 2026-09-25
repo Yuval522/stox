@@ -33,6 +33,7 @@ import {
   type FmpCashFlowStatement,
   type FmpIncomeStatement,
 } from "./providers/fmp";
+import { fetchEodhdFundamentals, eodhdIncomeToYears, eodhdBalanceToYears, eodhdCashFlowToYears } from "./providers/eodhd";
 import { applyKnownSplitAdjustment, splitsForSymbol } from "./stockSplits";
 import { BIG_SEVEN_SYMBOLS, MARKET_SUMMARY_SYMBOLS, TASE_SEED_SYMBOLS, US_FALLBACK_SYMBOLS } from "./symbols";
 import {
@@ -1330,6 +1331,7 @@ export async function getFundamentals(symbolRaw: string): Promise<FundamentalsBu
         fmpIncomeRowsQuarterly,
         fmpBalanceRowsQuarterly,
         fmpCashFlowRowsQuarterly,
+        eodhdFundamentals,
       ] = await Promise.all([
         getQuotes([symbol]),
         // QA fix (live report: ETFs like SPCX threw a generic "Unable to
@@ -1469,6 +1471,12 @@ export async function getFundamentals(symbolRaw: string): Promise<FundamentalsBu
         fetchFmpIncomeStatementsQuarterly(symbol).catch(() => null),
         fetchFmpBalanceSheetsQuarterly(symbol).catch(() => null),
         fetchFmpCashFlowStatementsQuarterly(symbol).catch(() => null),
+        // Multi-source aggregation, third/lowest-priority layer — no-op
+        // (resolves null almost instantly) unless EODHD_API_KEY is
+        // configured; see providers/eodhd.ts. A single combined fetch
+        // (unlike FMP's six separate endpoints) since EODHD's fundamentals
+        // endpoint returns every statement, annual and quarterly, together.
+        fetchEodhdFundamentals(symbol).catch(() => null),
       ]);
 
       const quote = quotes[0];
@@ -1534,6 +1542,7 @@ export async function getFundamentals(symbolRaw: string): Promise<FundamentalsBu
         [
           { source: "yahoo", years: yahooIncome },
           { source: "fmp", years: fmpIncomeToYears(fmpIncomeRows) },
+          { source: "eodhd", years: eodhdIncomeToYears(eodhdFundamentals?.incomeAnnual ?? [], false) },
         ],
         { anchorField: "totalRevenue", backfillZeroFields: ["grossProfit", "operatingIncome"] }
       );
@@ -1556,6 +1565,7 @@ export async function getFundamentals(symbolRaw: string): Promise<FundamentalsBu
           [
             { source: "yahoo", years: yahooBalance },
             { source: "fmp", years: fmpBalanceToYears(fmpBalanceRows) },
+            { source: "eodhd", years: eodhdBalanceToYears(eodhdFundamentals?.balanceAnnual ?? [], false) },
           ],
           { anchorField: "totalAssets", backfillZeroFields: ["totalLiabilities"] }
         ),
@@ -1568,6 +1578,14 @@ export async function getFundamentals(symbolRaw: string): Promise<FundamentalsBu
           [
             { source: "yahoo", years: yahooCashFlow },
             { source: "fmp", years: fmpCashFlowToYears(fmpCashFlowRows) },
+            {
+              source: "eodhd",
+              years: eodhdCashFlowToYears(eodhdFundamentals?.cashFlowAnnual ?? [], false, {
+                normalizeCapex,
+                normalizeStockBasedComp,
+                computeFreeCashFlow,
+              }),
+            },
           ],
           { anchorField: "operatingCashFlow" }
         ),
@@ -1607,6 +1625,7 @@ export async function getFundamentals(symbolRaw: string): Promise<FundamentalsBu
         [
           { source: "yahoo", years: yahooIncomeQuarterly },
           { source: "fmp", years: fmpIncomeToYears(fmpIncomeRowsQuarterly) },
+          { source: "eodhd", years: eodhdIncomeToYears(eodhdFundamentals?.incomeQuarterly ?? [], true) },
         ],
         { anchorField: "totalRevenue", backfillZeroFields: ["grossProfit", "operatingIncome"] }
       );
@@ -1624,6 +1643,7 @@ export async function getFundamentals(symbolRaw: string): Promise<FundamentalsBu
           [
             { source: "yahoo", years: yahooBalanceQuarterly },
             { source: "fmp", years: fmpBalanceToYears(fmpBalanceRowsQuarterly) },
+            { source: "eodhd", years: eodhdBalanceToYears(eodhdFundamentals?.balanceQuarterly ?? [], true) },
           ],
           { anchorField: "totalAssets", backfillZeroFields: ["totalLiabilities"] }
         ),
@@ -1636,6 +1656,14 @@ export async function getFundamentals(symbolRaw: string): Promise<FundamentalsBu
           [
             { source: "yahoo", years: yahooCashFlowQuarterly },
             { source: "fmp", years: fmpCashFlowToYears(fmpCashFlowRowsQuarterly) },
+            {
+              source: "eodhd",
+              years: eodhdCashFlowToYears(eodhdFundamentals?.cashFlowQuarterly ?? [], true, {
+                normalizeCapex,
+                normalizeStockBasedComp,
+                computeFreeCashFlow,
+              }),
+            },
           ],
           { anchorField: "operatingCashFlow" }
         ),

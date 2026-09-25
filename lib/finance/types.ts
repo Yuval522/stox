@@ -162,15 +162,17 @@ export interface TickerMetrics {
  * financial-statement year is fetched from whichever provider has it,
  * prioritized deepest/most-authoritative first. "yahoo" (lib/finance/yahoo.ts)
  * is the primary source; "fmp" (opt-in via FMP_API_KEY) is a secondary
- * fallback for whatever isolated gap remains. Both are capped at roughly
- * Yahoo's own free-tier depth (~4 annual periods / ~5 quarters) — there is
- * no source in this app deep enough to back a genuine 10-year+ history (SEC
- * EDGAR previously filled that role; it has been removed — see CLAUDE.md's
- * Data layer section). Optional and omitted on mock/demo data (see
- * mock-data.ts) — a missing `dataSource` should be read as "mock" whenever
+ * fallback for whatever isolated gap remains; "eodhd" (opt-in, paid, via
+ * EODHD_API_KEY — see providers/eodhd.ts) is a third, lowest-priority layer
+ * used specifically to extend history into years older than Yahoo/FMP cover
+ * — both of those are capped at roughly 4-5 fiscal years on their free
+ * tiers with no code-side workaround (SEC EDGAR previously filled the
+ * deep-history role; it has been removed — see CLAUDE.md's Data layer
+ * section). Optional and omitted on mock/demo data (see mock-data.ts) — a
+ * missing `dataSource` should be read as "mock" whenever
  * `FundamentalsBundle.source === "mock"`.
  */
-export type FinancialDataSource = "yahoo" | "fmp";
+export type FinancialDataSource = "yahoo" | "fmp" | "eodhd";
 
 /**
  * Set by mergeYearsBySource (aggregate.ts) when 2+ independently-fetched

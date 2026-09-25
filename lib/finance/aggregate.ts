@@ -3,7 +3,7 @@
  *
  * Rather than trusting a single provider for a fiscal year's income
  * statement / balance sheet / cash flow row, getFundamentals() (yahoo.ts)
- * fetches from up to two sources in parallel and this file merges them
+ * fetches from up to three sources in parallel and this file merges them
  * whole-row-per-fiscal-year (never blending individual fields from
  * different sources within the same year — that risks mixing incompatible
  * line-item definitions) in a fixed priority order:
@@ -11,18 +11,29 @@
  *   1. Yahoo Finance (yahoo.ts) — the primary source for every ticker.
  *      Yahoo's free fundamentalsTimeSeries API has a hard, undocumented
  *      backend cap of roughly 4 annual periods / ~5 quarters regardless of
- *      requested range — this app has no source deep enough to back a
- *      genuine "10 Years" / "All Available" range selection (SEC EDGAR
- *      previously filled that role; it has been removed — see CLAUDE.md's
- *      Data layer section), so a 10Y/All request simply returns however
- *      much Yahoo+FMP actually have. getAvailableRanges() (chart-transform.ts)
- *      computes its range options from actual data depth, so this degrades
- *      gracefully rather than crashing or hiding the range options.
+ *      requested range — this app has no FREE source deep enough to back a
+ *      genuine "10 Years" / "All Available" range selection on its own (SEC
+ *      EDGAR previously filled that role; it has been removed — see
+ *      CLAUDE.md's Data layer section). getAvailableRanges()
+ *      (chart-transform.ts) computes its range options from actual data
+ *      depth, so a request for more history than is actually available
+ *      degrades gracefully rather than crashing or hiding the range
+ *      options.
  *   2. Financial Modeling Prep (providers/fmp.ts) — opt-in (needs
- *      FMP_API_KEY), last-resort fallback for whatever gap remains; its
- *      free tier caps history at ~5 years so it rarely adds depth beyond
- *      what Yahoo already covers, but occasionally fills an isolated
- *      missing year within that recent window.
+ *      FMP_API_KEY), fallback for whatever gap remains; its free tier
+ *      caps history at ~5 years so it rarely adds depth beyond what Yahoo
+ *      already covers, but occasionally fills an isolated missing year
+ *      within that recent window.
+ *   3. EOD Historical Data (providers/eodhd.ts) — opt-in and PAID (needs
+ *      EODHD_API_KEY), lowest priority. This is the one source in this app
+ *      that can genuinely extend history beyond Yahoo/FMP's ~4-5 year
+ *      ceiling — demonstrated depth into the 1980s for major tickers via
+ *      licensed/digitized historical filing data (not SEC's structured
+ *      XBRL API, so it isn't subject to SEC's own ~2009 depth wall the way
+ *      Polygon/Intrinio effectively are). See docs/data-pipeline-
+ *      architecture.md for the full research behind this choice. Lowest
+ *      priority because Yahoo/FMP are fresher for recent years; EODHD's
+ *      real value is filling in years strictly older than what they cover.
  *
  * Every merged row keeps a `dataSource` tag so the UI can show exactly
  * where each year's numbers came from (see summarizeYearSources /
@@ -34,9 +45,11 @@
  * clear outlier instead of trusting priority blindly — see that function's
  * doc comment for the exact mechanism and thresholds. That outlier-demotion
  * path specifically needs 3+ independently-fetched sources to form a
- * majority vote (2 agreeing against 1 outlier), so with this app's current
- * 2-source setup (Yahoo, FMP) it's dormant code, harmless but inactive —
- * it'll engage again automatically if a third source is ever added.
+ * majority vote (2 agreeing against 1 outlier); it's dormant whenever
+ * EODHD_API_KEY is unset (only 2 sources — Yahoo, FMP — configured) and
+ * engages automatically the moment a real key is set AND a given fiscal
+ * year happens to be covered by all three (rare in practice, since EODHD's
+ * whole purpose is covering years Yahoo/FMP DON'T reach).
  *
  * Discrepancy flagging: separately from the outlier-demotion above
  * (which needs 3+ sources to know which one is likely wrong), ANY period
@@ -391,6 +404,7 @@ export function summarizeYearSources<T extends YearRow>(rows: T[]): SourceRun[] 
 export const SOURCE_LABELS: Record<FinancialDataSource, string> = {
   yahoo: "Yahoo Finance",
   fmp: "Financial Modeling Prep",
+  eodhd: "EOD Historical Data",
 };
 
 /** Human-readable one-liner, e.g. "2020-2023: Yahoo Finance · 2024-2026: Financial Modeling Prep". */
