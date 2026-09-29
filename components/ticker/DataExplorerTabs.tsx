@@ -329,7 +329,15 @@ export function DataExplorerTabs({
         )}
         {visitedTabs.has("Ratios") && (
           <div className={tab === "Ratios" ? undefined : "hidden"}>
-            <RatiosPanel income={income} balance={balance} metrics={metrics} />
+            <RatiosPanel
+              income={income}
+              balance={balance}
+              metrics={metrics}
+              incomeQuarterly={incomeQuarterly}
+              history={history}
+              quoteCurrency={quote.currency}
+              reportingCurrency={reportingCurrency}
+            />
           </div>
         )}
       </div>

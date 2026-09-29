@@ -69,9 +69,12 @@ export function splitsForSymbol(symbol: string): StockSplitEvent[] {
 /**
  * Approximates a fiscal-period label ("2022" or "2022-Q3") as its calendar
  * period-end date, purely for ordering against a split's exact date — "did
- * this reporting period end before or after the split."
+ * this reporting period end before or after the split." Exported for reuse
+ * by lib/finance/ratioHistory.ts, which needs the exact same label-to-date
+ * approximation to anchor a TTM EPS timeline against daily price history —
+ * rather than duplicating this parsing a second time.
  */
-function fiscalLabelToDate(fiscalYear: string): Date {
+export function fiscalLabelToDate(fiscalYear: string): Date {
   const quarterMatch = /^(\d{4})-Q([1-4])$/.exec(fiscalYear);
   if (quarterMatch) {
     const year = Number(quarterMatch[1]);
